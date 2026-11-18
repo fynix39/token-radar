@@ -30,16 +30,35 @@
   $('stat-watch').textContent = R.watchlist_size;
   $('stat-early').textContent = R.early_size;
 
-  // Model transparency: the multiples table the model derived.
+  // Model transparency: the multiples table the model derived, for the
+  // categories on this board, most peers first.
   var m = R.multiples;
   $('model-text').textContent =
     'Implied value = TVL × category multiple × growth × maturity × chain breadth. The multiple comes ' +
     'from the ' + m.live_count + ' protocols that already trade: the median market-cap-to-TVL of each ' +
     'category, shrunk toward the overall median of ' + m.overall_median.toFixed(3) + ' where peers are ' +
-    'thin. A category with no trading peer is valued at the overall median, never at an invented number.';
-  $('multiple-rows').innerHTML = m.by_category.map(function (r) {
+    'thin, and capped at ' + m.multiple_cap.toFixed(3) + ', the 90th percentile of all live ratios, so ' +
+    'one extreme peer cannot set a whole category\'s price. A category with no trading peer is valued ' +
+    'at the overall median, never at an invented number.';
+  var boardCats = new Set(R.rows.map(function (r) { return r.category || '(uncategorised)'; }));
+  var shown = m.by_category.filter(function (r) { return boardCats.has(r.category); })
+    .sort(function (a, b) { return b.comps - a.comps || (a.category < b.category ? -1 : 1); })
+    .slice(0, 15);
+  $('multiple-rows').innerHTML = shown.map(function (r) {
     return '<tr><td>' + esc(r.category) + '</td><td class="num">' + r.multiple.toFixed(3) +
       '</td><td class="num">' + r.comps + '</td></tr>';
+  }).join('');
+
+  // Live tokens: already trading, so the board shows the market's own values.
+  $('live-text').textContent =
+    'These protocols already have a token that trades, so they are not ranked by the model. ' +
+    'They are the peers the multiples are measured from, shown here at the market\'s own values.';
+  $('live-rows').innerHTML = R.live.map(function (r) {
+    return '<tr><td><span class="name">' + esc(r.name) + '</span></td>' +
+      '<td class="cat">' + esc(r.category || '—') + '</td>' +
+      '<td class="num">' + money(r.tvl_usd) + '</td>' +
+      '<td class="num">' + money(r.mcap_usd) + '</td>' +
+      '<td class="num">' + pct(r.change_7d) + '</td></tr>';
   }).join('');
 
   // Filter options.
@@ -76,7 +95,8 @@
     $('rows').innerHTML = rows.map(function (r) {
       return '<tr data-slug="' + esc(r.slug) + '"' + (r.slug === state.slug ? ' class="sel"' : '') + '>' +
         '<td class="rank">' + r.rank + '</td>' +
-        '<td><span class="name">' + esc(r.name) + '</span></td>' +
+        '<td><span class="name">' + esc(r.name) + '</span>' +
+        (r.watchlist ? '<span class="badge">WATCHLIST</span>' : '<span class="badge early">EARLY</span>') + '</td>' +
         '<td class="cat">' + esc(r.category || '—') + '</td>' +
         '<td>' + r.chains.slice(0, 3).map(function (c) { return '<span class="chip">' + esc(c) + '</span>'; }).join('') +
         (r.chains.length > 3 ? '<span class="chip">+' + (r.chains.length - 3) + '</span>' : '') + '</td>' +
@@ -97,7 +117,7 @@
     $('detail-body').innerHTML =
       '<h2>' + esc(r.name) + '</h2>' +
       '<p class="sub">Rank ' + r.rank + ' · ' + esc(r.category || 'uncategorised') + ' · ' +
-      r.chains.map(esc).join(', ') + '</p>' +
+      r.chains.map(esc).join(', ') + ' · ' + (r.watchlist ? 'on the watchlist' : 'early find') + '</p>' +
       '<p class="big">' + money(r.implied_value_usd) + '</p>' +
       '<p class="lbl">Implied value</p>' +
       '<dl>' +
@@ -122,6 +142,9 @@
     $('detail').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   });
   $('close-detail').addEventListener('click', function () { state.slug = null; render(); });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && state.slug) { state.slug = null; render(); }
+  });
   $('q').addEventListener('input', function (e) { state.q = e.target.value.trim().toLowerCase(); render(); });
   $('cat').addEventListener('change', function (e) { state.cat = e.target.value; render(); });
   $('chain').addEventListener('change', function (e) { state.chain = e.target.value; render(); });

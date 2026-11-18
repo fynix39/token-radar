@@ -18,7 +18,7 @@ protocols as of 2026-11-14), scores every pre-token protocol, and writes:
 - `dossier.json` — the summary the judge reads, built with the vendored
   `makefun-board` library
 
-## The model (`radar-2`)
+## The model (`radar-3`)
 
 The implied value follows only from the snapshot's own figures. The multiple is
 derived from the protocols that already trade, per category, on every run — never
@@ -26,16 +26,19 @@ from a hardcoded list of names:
 
 ```
 compMultiple(category) = median(mcap_usd / tvl_usd) over live-token peers
-multiple(category)     = w * compMultiple + (1 - w) * overallMedian, w = n / (n + 5)
+multiple(category)     = min(w * compMultiple + (1 - w) * overallMedian, p90)
+                         w = n / (n + 5), p90 the 90th percentile of all live ratios
 growthMult             = 1 + clamp(change_7d, -60, 120) / 100 * 0.5
 maturityMult           = 0.6 + min(age_days, 1095) / 1095 * 0.4
 chainMult              = 1 + 0.02 * min(chains - 1, 5)
 implied                = tvl_usd * multiple * growthMult * maturityMult * chainMult
 ```
 
-The shrinkage weight pulls thin categories toward the overall median (0.205 on this
-snapshot): a category with no trading peer at all — Risk Curators, most of the
-watchlist — is valued at the overall median rather than at an invented number.
+The shrinkage weight pulls thin categories toward the overall median (0.214 on this
+snapshot): a category with no trading peer at all is valued at the overall median
+rather than at an invented number. The cap binds only extreme single-peer
+categories: Rain, the Prediction Market peer, trades at 400x its $6.6M TVL, and
+without the cap it would put a $10.7M protocol third on the whole board.
 The full multiples table is printed in the dashboard.
 
 Farm plans are derived from each protocol's own record (category, chains, TVL,

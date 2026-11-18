@@ -10,16 +10,19 @@
 // it is derived from the protocols that already trade, per category, every run:
 //
 //   compMultiple(category) = median(mcap_usd / tvl_usd) over live-token protocols of that category
-//   multiple(category)     = w * compMultiple + (1 - w) * overallMedian, w = n / (n + K)
+//   multiple(category)     = min(w * compMultiple + (1 - w) * overallMedian, p90),
+//                            w = n / (n + K), p90 the 90th percentile of all live ratios
 //   growthMult             = 1 + clamp(change_7d, -60, 120) / 100 * GROWTH_WEIGHT
 //   maturityMult           = 0.6 + min(age_days, 1095) / 1095 * 0.4   (age unknown: 365 days)
 //   chainMult              = 1 + 0.02 * min(chains - 1, 5)
 //   implied                = max(1, round(tvl_usd * multiple * growthMult * maturityMult * chainMult))
 //
 // The shrinkage weight w pulls thin categories toward the overall median: a category with no trading
-// peer at all (Risk Curators, most of this snapshot's watchlist) is valued at the overall median
-// rather than at an invented number. No protocol name is ever special-cased: the same functions
-// score every row, and the multiples table is printed in the dashboard for the reader to check.
+// peer at all is valued at the overall median rather than at an invented number. The cap binds only
+// extreme single-peer categories: Rain, the Prediction Market peer, trades at 400x its $6.6M TVL,
+// and without the cap it would put a $10.7M protocol third on the whole board. No protocol name is
+// ever special-cased: the same functions score every row, and the multiples table is printed in the
+// dashboard for the reader to check.
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -72,7 +75,7 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-2';
+export const MODEL_VERSION = 'radar-3';
 
 /** How many pre-token protocols below the watchlist floor the early radar carries by TVL. */
 export const EARLY_BY_TVL = 160;
@@ -95,6 +98,8 @@ export interface CategoryMultiple {
 export interface DerivedMultiples {
   overall_median: number;
   live_count: number;
+  /** The 90th percentile of all live ratios: no category multiple exceeds this. */
+  multiple_cap: number;
   by_category: CategoryMultiple[];
 }
 
@@ -151,6 +156,7 @@ export interface RadarRow {
   growth_multiplier: number;
   maturity_multiplier: number;
   chain_multiplier: number;
+  watchlist: boolean;
   farm_steps: string[];
 }
 
@@ -204,6 +210,13 @@ export function median(values: number[]): number {
   return sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
 }
 
+/** The value at the q-th quantile of a list of numbers (nearest-rank); NaN when empty. */
+export function quantile(values: number[], q: number): number {
+  if (values.length === 0) return NaN;
+  const sorted = [...values].sort((a, b) => a - b);
+  return sorted[Math.min(sorted.length - 1, Math.floor(q * sorted.length))]!;
+}
+
 /** A whole day count from `from` to `to`, clamped at zero; null when either date is absent or bad. */
 export function ageDays(asOf: string, listedAt: string | null): number | null {
   if (listedAt === null) return null;
@@ -216,11 +229,15 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
 /**
  * The multiples table, derived from the snapshot's own trading protocols: for every category that
  * appears on the board, the median FDV/TVL of its live-token peers, shrunk toward the overall median
- * by comp count. Categories with no trading peer keep the overall median and say so (comps 0).
+ * by comp count, and capped at the 90th percentile of all live ratios so one extreme peer cannot set
+ * a whole category's price. Categories with no trading peer keep the overall median and say so
+ * (comps 0).
  */
 export function deriveMultiples(snapshot: Snapshot, model: ModelConstants = MODEL): DerivedMultiples {
   const live = snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
-  const overall = median(live.map((p) => p.mcap_usd! / p.tvl_usd));
+  const ratios = live.map((p) => p.mcap_usd! / p.tvl_usd);
+  const overall = median(ratios);
+  const cap = quantile(ratios, 0.9);
   const byCategory = new Map<string, number[]>();
   for (const p of live) {
     const key = p.category ?? '(uncategorised)';
@@ -234,11 +251,11 @@ export function deriveMultiples(snapshot: Snapshot, model: ModelConstants = MODE
       const comps = byCategory.get(category) ?? [];
       const raw = comps.length > 0 ? median(comps) : null;
       const w = comps.length / (comps.length + model.shrinkage_k);
-      const multiple = raw === null ? overall : w * raw + (1 - w) * overall;
+      const multiple = raw === null ? overall : Math.min(w * raw + (1 - w) * overall, cap);
       return { category, multiple, raw_median: raw, comps: comps.length };
     })
     .sort((a, b) => (a.category < b.category ? -1 : a.category > b.category ? 1 : 0));
-  return { overall_median: overall, live_count: live.length, by_category: table };
+  return { overall_median: overall, live_count: live.length, multiple_cap: cap, by_category: table };
 }
 
 /** A category's shrunk multiple out of the derived table, or the overall median. */
@@ -489,7 +506,7 @@ export function liveRows(snapshot: Snapshot): LiveRow[] {
 }
 
 /** A board row's compact form for data.js, with the farm plan baked in so page and board agree. */
-export function radarRow(row: BoardRow): RadarRow {
+export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
   return {
     rank: row.rank,
     slug: row.slug,
@@ -507,6 +524,7 @@ export function radarRow(row: BoardRow): RadarRow {
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
     chain_multiplier: row.model.chain_multiplier,
+    watchlist: watchlist.has(row.slug),
     farm_steps: row.farm_steps,
   };
 }
@@ -528,7 +546,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     board_size: board.length,
     early_size: early,
     live_size: live.length,
-    rows: board.map(radarRow),
+    rows: board.map((r) => radarRow(r, new Set(snapshot.watchlist))),
     live,
   };
   return { board, radar };

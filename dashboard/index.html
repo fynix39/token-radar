@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Token Radar — pre-token protocols by implied value</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <div>
+    <h1>Token Radar</h1>
+    <p class="sub" id="meta"></p>
+  </div>
+  <div class="legend">
+    <span><b id="stat-rows"></b> protocols ranked</span>
+    <span><b id="stat-watch"></b> on the watchlist</span>
+    <span><b id="stat-early"></b> early finds</span>
+  </div>
+</header>
+
+<section class="controls" id="controls">
+  <input id="q" type="search" placeholder="Search a protocol…" aria-label="Search protocols">
+  <select id="cat" aria-label="Filter by category"></select>
+  <select id="chain" aria-label="Filter by chain"></select>
+  <select id="sort" aria-label="Sort the board">
+    <option value="rank">Sort: rank</option>
+    <option value="implied">Sort: implied value</option>
+    <option value="tvl">Sort: TVL</option>
+    <option value="growth">Sort: 7d growth</option>
+    <option value="age">Sort: age</option>
+  </select>
+  <button id="reset" type="button">Reset</button>
+</section>
+
+<main>
+  <section id="board-wrap">
+    <table id="board">
+      <thead><tr>
+        <th>#</th><th>Protocol</th><th>Category</th><th>Chains</th>
+        <th class="num">TVL</th><th class="num">7d</th><th class="num">Implied value</th>
+      </tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <p class="count" id="count"></p>
+  </section>
+
+  <aside id="detail" hidden>
+    <button id="close-detail" type="button" aria-label="Close detail">×</button>
+    <div id="detail-body"></div>
+  </aside>
+</main>
+
+<section class="model" id="model">
+  <h2>How the value is figured</h2>
+  <p id="model-text"></p>
+  <table id="multiples">
+    <thead><tr><th>Category</th><th class="num">Multiple</th><th class="num">Trading peers</th></tr></thead>
+    <tbody id="multiple-rows"></tbody>
+  </table>
+</section>
+
+<footer>
+  <p>An implied value is this board's own claim, never make.fun's. A protocol the
+  snapshot records as having no token may still have one its record does not carry.
+  Nothing here is investment advice.</p>
+</footer>
+
+<script src="../data.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

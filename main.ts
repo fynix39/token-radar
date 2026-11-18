@@ -49,7 +49,12 @@ if (issue !== null) {
 }
 
 mkdirSync(out, { recursive: true });
-writeFileSync(join(out, 'board.json'), `${JSON.stringify({ rows: board })}\n`);
+// board.json's rows are the gate's shape; the extra top-level model block (allowed by the rules)
+// carries the fitted curve and its validation, so the board file states how it was valued.
+writeFileSync(
+  join(out, 'board.json'),
+  `${JSON.stringify({ rows: board, model: { version: radar.model_version, fit: radar.fit, validation: radar.validation, coverage: radar.coverage } })}\n`,
+);
 writeFileSync(join(out, 'data.js'), dataScript(radar));
 
 /** Copy one directory's regular files into `to`, skipping names that start with a dot. */
@@ -83,14 +88,18 @@ for (const name of shots) {
 // The dossier is written last: the scorer rebuilds it from this /output and compares bytes.
 writeFileSync(join(out, 'dossier.json'), buildDossier(out, { text_max_bytes: TEXT_MAX_BYTES, screenshots: SCREENSHOT_CAPS, dashboard: { max_files: 400, max_bytes: 4_194_304 } }));
 
-const multiples = radar.multiples.by_category
+const effects = radar.fit.by_category
   .filter((m) => m.comps > 0)
   .sort((a, b) => b.comps - a.comps)
   .slice(0, 5)
-  .map((m) => `${m.category} ${m.multiple.toFixed(3)} (n=${m.comps})`)
+  .map((m) => `${m.category} x${m.factor.toFixed(2)} (n=${m.comps})`)
   .join(', ');
+const v = radar.validation;
+const c = radar.coverage;
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
-    `token radar: multiples from ${radar.multiples.live_count} live-token comps, overall median ${radar.multiples.overall_median.toFixed(3)}; largest: ${multiples}\n` +
+    `token radar: fitted curve log(mcap) = ${radar.fit.intercept.toFixed(2)} + ${radar.fit.slope.toFixed(2)} log(TVL), R2 ${radar.fit.r2.toFixed(2)}, from ${radar.fit.comps} live-token comps; largest effects: ${effects}\n` +
+    `token radar: leave-one-out median |log error| ${v.loo_median_abs_log_error} (flat-median baseline ${v.loo_median_abs_log_error_baseline}), hit within 2x ${(v.loo_hit_within_2x * 100).toFixed(0)}% vs ${(v.loo_hit_within_2x_baseline * 100).toFixed(0)}%; walk-forward ${v.walkforward_median_abs_log_error ?? 'n/a'} on ${v.walkforward_test_n} newer comps; ranks from ${v.refits} refits\n` +
+    `token radar: coverage ${c.ranked} ranked + ${c.live} live + ${c.excluded} excluded (${c.excluded_cex} CEX, ${c.excluded_versioned} versioned) = ${c.total}\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dash.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );

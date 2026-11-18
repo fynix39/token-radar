@@ -19,6 +19,14 @@
   </div>
 </header>
 
+<section class="kpis" id="kpis">
+  <div class="kpi"><b id="kpi-board"></b><span>protocols ranked</span><i id="kpi-board-sub"></i></div>
+  <div class="kpi"><b id="kpi-cover"></b><span>of the snapshot accounted for</span><i id="kpi-cover-sub"></i></div>
+  <div class="kpi"><b id="kpi-loo"></b><span>leave-one-out error (log)</span><i id="kpi-loo-sub"></i></div>
+  <div class="kpi"><b id="kpi-refits"></b><span>bootstrap refits</span><i>rank ranges p10–p90 per row</i></div>
+  <div class="kpi"><b id="kpi-slope"></b><span>fitted log-log slope</span><i id="kpi-slope-sub"></i></div>
+</section>
+
 <section class="controls" id="controls">
   <input id="q" type="search" placeholder="Search a protocol…" aria-label="Search protocols">
   <select id="cat" aria-label="Filter by category"></select>
@@ -38,7 +46,7 @@
     <table id="board">
       <thead><tr>
         <th>#</th><th>Protocol</th><th>Category</th><th>Chains</th>
-        <th class="num">TVL</th><th class="num">7d</th><th class="num">Implied value</th>
+        <th class="num">TVL</th><th class="num">7d</th><th class="num">Implied value</th><th>Farm</th>
       </tr></thead>
       <tbody id="rows"></tbody>
     </table>
@@ -51,12 +59,26 @@
   </aside>
 </main>
 
+<section class="movers" id="movers">
+  <h2>Movers — the fastest growers on the board</h2>
+  <p id="movers-text"></p>
+  <table id="movers-table">
+    <thead><tr><th>#</th><th>Protocol</th><th>Category</th><th class="num">7d</th><th class="num">TVL</th><th class="num">Implied value</th></tr></thead>
+    <tbody id="movers-rows"></tbody>
+  </table>
+</section>
+
 <section class="model" id="model">
-  <h2>How the value is figured</h2>
+  <h2>How the value is figured — a fitted curve, tested out of sample</h2>
   <p id="model-text"></p>
-  <table id="multiples">
-    <thead><tr><th>Category</th><th class="num">Multiple</th><th class="num">Trading peers</th></tr></thead>
-    <tbody id="multiple-rows"></tbody>
+  <h3>Validation</h3>
+  <dl class="valid" id="valid-rows"></dl>
+  <p id="valid-note"></p>
+  <h3>Category effects</h3>
+  <p id="effects-text"></p>
+  <table id="effects">
+    <thead><tr><th>Category</th><th class="num">Factor</th><th class="num">Effect (log)</th><th class="num">Trading peers</th></tr></thead>
+    <tbody id="effect-rows"></tbody>
   </table>
 </section>
 

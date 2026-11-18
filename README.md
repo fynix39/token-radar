@@ -14,41 +14,59 @@ build the best token launch radar.
 `main.ts` reads the sealed DefiLlama snapshot (`/input/snapshot.json`, 758
 protocols as of 2026-11-14), scores every pre-token protocol, and writes:
 
-- `board.json` — the ranked board (225 rows: all 40 watchlist protocols, the 160
-  largest pre-token protocols below the floor, and the 25 fastest growers the size
-  cut missed)
+- `board.json` — the ranked board (289 rows: all 40 watchlist protocols plus
+  every other pre-token protocol the board may rank), with the fitted curve and
+  its validation in the top-level `model` block
 - `data.js` — the same board as a script the dashboard reads, no network
 - `dashboard/` — a static, sortable, filterable board with a detail view per
-  protocol
-- `screenshots/` — the board, a detail view and a filtered view
+  protocol, a KPI strip, a movers section and a validation panel
+- `screenshots/` — the board, a detail view and the validation panel
 - `dossier.json` — the summary the judge reads, built with the vendored
   `makefun-board` library
 
-## The model (`radar-3`)
+## The model (`radar-4`)
 
-The implied value follows only from the snapshot's own figures. The multiple is
-derived from the protocols that already trade, per category, on every run — never
-from a hardcoded list of names:
+The implied value follows only from the snapshot's own figures. The value model
+is a log-log comps curve FITTED on the protocols that already trade, on every
+run — never from a hardcoded list of names:
 
 ```
-compMultiple(category) = median(mcap_usd / tvl_usd) over live-token peers
-multiple(category)     = min(w * compMultiple + (1 - w) * overallMedian, p90)
-                         w = n / (n + 5), p90 the 90th percentile of all live ratios
-growthMult             = 1 + clamp(change_7d, -60, 120) / 100 * 0.5
-maturityMult           = 0.6 + min(age_days, 1095) / 1095 * 0.4
-chainMult              = 1 + 0.02 * min(chains - 1, 5)
-implied                = tvl_usd * multiple * growthMult * maturityMult * chainMult
+log(mcap) = intercept + slope * log(TVL) + category_effect     (least squares)
+implied   = exp(intercept + slope * log(TVL) + category_effect)
+            * growthMult * maturityMult * chainMult
+growthMult   = 1 + clamp(change_7d, -60, 120) / 100 * 0.5
+maturityMult = 0.6 + min(age_days, 1095) / 1095 * 0.4
+chainMult    = 1 + 0.02 * min(chains - 1, 5)
 ```
 
-The shrinkage weight pulls thin categories toward the overall median (0.214 on this
-snapshot): a category with no trading peer at all is valued at the overall median
-rather than at an invented number. The cap binds only extreme single-peer
-categories: Rain, the Prediction Market peer, trades at 400x its $6.6M TVL, and
-without the cap it would put a $10.7M protocol third on the whole board.
-The full multiples table is printed in the dashboard.
+On this snapshot the fit is `log(mcap) = 6.96 + 0.52 * log(TVL)` (R² 0.19,
+128 comps): bigger protocols trade at lower multiples, so the curve values size
+sub-linearly. Each category adds its own effect — the median residual of its
+trading peers, shrunk toward zero by n/(n+5) and capped at the 90th percentile
+of |residual|; a category with no trading peer gets no effect at all, never an
+invented number.
+
+The fit is validated out of sample, and the numbers are printed in the
+dashboard and in `board.json`:
+
+- **Leave-one-out** over all 128 comps: median absolute log error 1.35 (×3.8),
+  33% predicted within 2× — against 1.63 (×5.1) and 20% for the flat per-category
+  median multiple the fit replaces.
+- **Walk-forward split**: fit on the 48 comps listed up to 2024-02-18, tested on
+  the 47 newer ones: median absolute log error 1.13, 32% within 2×.
+- **Rank ranges**: the curve is refit 200 times on bootstrap resamples of the
+  comps (seeded, so two runs agree byte for byte); every row carries its p10–p90
+  rank range.
+
+The board covers all 289 rankable pre-token protocols, and the dashboard
+accounts for the whole snapshot: 289 ranked + 416 live-token + 53 excluded
+(42 exchanges, 11 versioned pools) = 758.
 
 Farm plans are derived from each protocol's own record (category, chains, TVL,
-age): six steps with a cost and a time each, gas figures fitted to the chain.
+age): six steps with a cost and a time each, gas figures fitted to the chain —
+and the cost is netted to the dollar (capital plus every transaction's gas over
+the hold: two to set up, one a week, one to exit), with a verdict per row: farm,
+thin or skip.
 
 ## Run it
 

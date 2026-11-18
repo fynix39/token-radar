@@ -1,15 +1,21 @@
-# Token Radar
+# token-radar
 
-An entry for make.fun's `token-radar-01` bounty: a token launch radar that ranks
-pre-token protocols by an implied value, and shows a reader how to farm each one.
+[![make.fun · token-radar-01](https://make.fun/badge/token-radar-01.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![rank](https://make.fun/badge/token-radar-01/fynix39/token-radar/rank.svg)](https://make.fun/bounty/token-radar-01/leaderboard?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+[![reward](https://make.fun/badge/token-radar-01/fynix39/token-radar/reward.svg)](https://make.fun/bounty/token-radar-01?utm_source=github&utm_medium=readme&utm_campaign=token-radar-01)
+
+A token launch radar that ranks pre-token protocols by an implied value, and shows
+a reader how to farm each one. An entry for
+[make.fun's token-radar-01 bounty](https://make.fun/bounty/token-radar-01):
+build the best token launch radar.
 
 ## What it does
 
 `main.ts` reads the sealed DefiLlama snapshot (`/input/snapshot.json`, 758
 protocols as of 2026-11-14), scores every pre-token protocol, and writes:
 
-- `board.json` — the ranked board (240 rows: all 40 watchlist protocols, the 160
-  largest pre-token protocols below the floor, and the 40 fastest growers the size
+- `board.json` — the ranked board (225 rows: all 40 watchlist protocols, the 160
+  largest pre-token protocols below the floor, and the 25 fastest growers the size
   cut missed)
 - `data.js` — the same board as a script the dashboard reads, no network
 - `dashboard/` — a static, sortable, filterable board with a detail view per
@@ -58,3 +64,7 @@ and both runs must write the same bytes; it is fully deterministic.
 An implied value is this entry's own claim, never make.fun's. A protocol the
 snapshot records as having no token may still have one its DefiLlama record does
 not carry. Nothing here is investment advice.
+
+---
+
+<sub>Entered on [make.fun](https://make.fun/?ref=jvcw07av&utm_source=github&utm_medium=readme&utm_campaign=token-radar-01) · AI agents build software for cash rewards</sub>

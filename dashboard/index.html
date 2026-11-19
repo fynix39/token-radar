@@ -24,7 +24,7 @@
   <div class="kpi"><b id="kpi-cover"></b><span>of the snapshot accounted for</span><i id="kpi-cover-sub"></i></div>
   <div class="kpi"><b id="kpi-loo"></b><span>leave-one-out error (log)</span><i id="kpi-loo-sub"></i></div>
   <div class="kpi"><b id="kpi-refits"></b><span>bootstrap refits</span><i>rank ranges p10–p90 per row</i></div>
-  <div class="kpi"><b id="kpi-slope"></b><span>fitted log-log slope</span><i id="kpi-slope-sub"></i></div>
+  <div class="kpi"><b id="kpi-slope"></b><span>fitted curve</span><i id="kpi-slope-sub"></i></div>
 </section>
 
 <section class="controls" id="controls">
@@ -34,6 +34,7 @@
   <select id="sort" aria-label="Sort the board">
     <option value="rank">Sort: rank</option>
     <option value="implied">Sort: implied value</option>
+    <option value="ipd">Sort: implied per $1</option>
     <option value="tvl">Sort: TVL</option>
     <option value="growth">Sort: 7d growth</option>
     <option value="age">Sort: age</option>
@@ -46,7 +47,7 @@
     <table id="board">
       <thead><tr>
         <th>#</th><th>Protocol</th><th>Category</th><th>Chains</th>
-        <th class="num">TVL</th><th class="num">7d</th><th class="num">Implied value</th><th>Farm</th>
+        <th class="num">TVL</th><th class="num">7d</th><th class="num">Implied value</th><th class="num">Implied/$1</th><th>Farm</th>
       </tr></thead>
       <tbody id="rows"></tbody>
     </table>
@@ -74,6 +75,18 @@
   <h3>Validation</h3>
   <dl class="valid" id="valid-rows"></dl>
   <p id="valid-note"></p>
+  <h3>Curve form — picked by two blind tests</h3>
+  <p id="forms-text"></p>
+  <table id="forms">
+    <thead><tr><th>Form</th><th class="num">Leave-one-out</th><th class="num">Split test</th><th class="num">Combined</th><th class="num">Within 2× (LOO)</th></tr></thead>
+    <tbody id="form-rows"></tbody>
+  </table>
+  <h3>Leave-one-out by category</h3>
+  <p id="catloo-text"></p>
+  <table id="catloo">
+    <thead><tr><th>Category</th><th class="num">Comps</th><th class="num">Median |log error|</th><th class="num">Within 2×</th></tr></thead>
+    <tbody id="catloo-rows"></tbody>
+  </table>
   <h3>Category effects</h3>
   <p id="effects-text"></p>
   <table id="effects">
@@ -88,6 +101,15 @@
   <table id="live-table">
     <thead><tr><th>Protocol</th><th>Category</th><th class="num">TVL</th><th class="num">Market cap</th><th class="num">7d</th></tr></thead>
     <tbody id="live-rows"></tbody>
+  </table>
+</section>
+
+<section class="audit" id="audit">
+  <h2>Audit — every protocol the board does not rank, with the reason</h2>
+  <p id="audit-text"></p>
+  <table id="audit-table">
+    <thead><tr><th>Protocol</th><th>Category</th><th class="num">TVL</th><th>Why it is not ranked</th></tr></thead>
+    <tbody id="audit-rows"></tbody>
   </table>
 </section>
 

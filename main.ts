@@ -75,7 +75,7 @@ function copyFiles(from: string, to: string): string[] {
 const dash = copyFiles(join(here, 'dashboard'), join(out, 'dashboard'));
 const shots = copyFiles(join(here, 'screenshots'), join(out, 'screenshots'));
 if (shots.length < 3) {
-  process.stderr.write(`token radar: screenshots/ holds ${shots.length} image${shots.length === 1 ? '' : 's'}: hand in 3, the board, a detail view and a filtered view\n`);
+  process.stderr.write(`token radar: screenshots/ holds ${shots.length} image${shots.length === 1 ? '' : 's'}: hand in 4, the board, a detail view, the validation panel and the audit\n`);
   process.exit(1);
 }
 for (const name of shots) {
@@ -96,10 +96,16 @@ const effects = radar.fit.by_category
   .join(', ');
 const v = radar.validation;
 const c = radar.coverage;
+const verdicts = { farm: 0, thin: 0, skip: 0 };
+for (const r of board) verdicts[r.farm.verdict]++;
+const formLine = v.forms.map((f) => `${f.form} ${f.combined}${f.chosen ? ' *' : ''}`).join(', ');
 process.stdout.write(
   `token radar: ${snapshot.protocols.length} protocols, ${snapshot.watchlist.length} on the watchlist, ${board.length} rows scored (${radar.early_size} early, ${radar.live_size} live set aside)\n` +
+    `token radar: curve form picked by two blind tests (LOO median + split median, lower wins): ${formLine}; winner ${v.chosen_form}\n` +
     `token radar: fitted curve log(mcap) = ${radar.fit.intercept.toFixed(2)} + ${radar.fit.slope.toFixed(2)} log(TVL), R2 ${radar.fit.r2.toFixed(2)}, from ${radar.fit.comps} live-token comps; largest effects: ${effects}\n` +
-    `token radar: leave-one-out median |log error| ${v.loo_median_abs_log_error} (flat-median baseline ${v.loo_median_abs_log_error_baseline}), hit within 2x ${(v.loo_hit_within_2x * 100).toFixed(0)}% vs ${(v.loo_hit_within_2x_baseline * 100).toFixed(0)}%; walk-forward ${v.walkforward_median_abs_log_error ?? 'n/a'} on ${v.walkforward_test_n} newer comps; ranks from ${v.refits} refits\n` +
-    `token radar: coverage ${c.ranked} ranked + ${c.live} live + ${c.excluded} excluded (${c.excluded_cex} CEX, ${c.excluded_versioned} versioned) = ${c.total}\n` +
+    `token radar: leave-one-out median |log error| ${v.loo_median_abs_log_error} (flat-median baseline ${v.loo_median_abs_log_error_baseline}), hit within 2x ${(v.loo_hit_within_2x * 100).toFixed(0)}% vs ${(v.loo_hit_within_2x_baseline * 100).toFixed(0)}%; split ${v.split_median_abs_log_error ?? 'n/a'} on ${v.split_test_n} held-out comps; walk-forward ${v.walkforward_median_abs_log_error ?? 'n/a'} on ${v.walkforward_test_n} newer comps; ranks from ${v.refits} refits\n` +
+    `token radar: neighbours reported as comparables (kin + 8 nearest traded comps per row), blend weight 0 — five blend designs failed the split test, so the curve alone prices the board\n` +
+    `token radar: farm verdicts farm ${verdicts.farm} / thin ${verdicts.thin} / skip ${verdicts.skip} (skip: gas over the capital, or implied under $1M)\n` +
+    `token radar: coverage ${c.ranked} ranked + ${c.live} live + ${c.excluded} excluded (${c.excluded_cex} CEX, ${c.excluded_versioned} versioned) = ${c.total}; audit lists all ${radar.audit.length} excluded protocols with a reason\n` +
     `token radar: wrote ${join(out, 'board.json')}, ${join(out, 'data.js')}, ${join(out, 'dashboard')} (${dash.length} files), ${join(out, 'screenshots')} (${shots.length} images) and ${join(out, 'dossier.json')}\n`,
 );

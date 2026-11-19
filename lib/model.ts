@@ -1,36 +1,43 @@
-// The token radar's model, version radar-4: one snapshot of the protocol universe in, one ranked
+// The token radar's model, version radar-5: one snapshot of the protocol universe in, one ranked
 // board out. The board ranks every pre-token protocol the snapshot can rank — the watchlist plus all
-// 249 other rankable pre-token protocols — and accounts for the rest of the snapshot's 758 protocols
-// in its coverage strip (live-token protocols shown at the market's own values, pre-token protocols
-// excluded as exchanges or versioned pools).
+// 249 other rankable pre-token protocols — and audits the rest of the snapshot's 758 protocols: the
+// 416 live-token protocols anchor the fit, and the 53 excluded pre-token protocols are listed with
+// the reason each one is not ranked (an exchange, or a versioned pool of another protocol).
 //
-// The value model is FITTED, not a flat multiple. From the snapshot's own trading protocols (the
-// comps: live-token protocols with a market cap and a TVL), the model fits a log-log comps curve:
+// The value model is FITTED, and its FORM IS CHOSEN BY TWO BLIND TESTS, not fixed in advance.
+// Three forms compete — a log-log line, a log-log quadratic, and a flat per-category median — and
+// each is scored by leave-one-out over all 128 comps plus a seeded random-half split (fit half the
+// comps, test the other half). The form with the lowest combined out-of-sample error is the one the
+// board uses, and the comparison is printed in the dashboard and in board.json, so the choice is
+// the data's, not the author's. A walk-forward split (fit the older comps, test the newer ones) and
+// a per-category leave-one-out table check the winner a third and fourth way.
 //
-//   log(mcap) = intercept + slope * log(TVL) + category_effect
+// Every prediction blends TWO signals. The fitted curve gives the size answer — what a protocol of
+// this TVL is worth — and the protocol's nearest traded neighbours give the local answer: the K
+// comps closest in log(TVL), same category first, whose median market-cap-to-TVL ratio prices the
+// row from its own neighbourhood. The blend weight grows with the neighbour count and shrinks with
+// their distance, so a thin category with no close peer leans on the curve while a row with close
+// peers leans on them. The neighbour count, the blend weight and the nearest comparable (the kin)
+// are printed per row, so no number is a black box.
 //
-// by ordinary least squares, with one shrunk effect per category (the median residual of its comps,
-// pulled toward zero by n/(n+K), capped at the 90th percentile of |residual|). A category with no
-// trading peer gets no effect at all rather than an invented number. The fitted curve answers what
-// the data actually says: on this snapshot the slope is about 0.52, so bigger protocols trade at
-// lower multiples and the curve values size sub-linearly. No protocol name is ever special-cased.
+// Rank stability is measured, not asserted: the chosen form is refit 200 times on bootstrap
+// resamples of the comps (a seeded PRNG, so two runs agree byte for byte) and every row carries the
+// p10-p90 range of its rank.
 //
-// The fit is VALIDATED out of sample, and the numbers are printed in the dashboard and in board.json:
-// leave-one-out over all 128 comps (median absolute log error, and the share predicted within 2x,
-// against the same test for the old flat-median model), and a walk-forward-style split (fit on the
-// comps listed before the median listing date, tested on the ones listed after). Rank stability is
-// measured, not asserted: the model is refit 200 times on bootstrap resamples of the comps (a seeded
-// PRNG, so two runs agree byte for byte) and every row carries the p10-p90 range of its rank.
+// What a row's farm costs is NETTED TO THE DOLLAR, and its economics are stated four ways: the
+// capital plus every transaction's gas over the hold; the gas as a share of the capital; the time
+// budget in hours (setup, one weekly action, the claim check, the log); and the launch's implied
+// value per dollar of farm cost and per hour of farm time. Those last two are screening ratios —
+// how much launch a dollar or an hour of farming screens — never a promised return: a farmer
+// captures only a small share of any launch, and the dashboard says so. The verdict follows from
+// the net cost and the launch's scale: skip when the gas alone exceeds the capital, or the launch
+// is under $1M implied; thin when the gas exceeds half the capital, or the launch is under $10M
+// implied; farm otherwise. The farm steps themselves stay six, each an action with a cost and a time.
 //
-// What a row's farm costs is NETTED TO THE DOLLAR: the capital the position needs plus every
-// transaction's gas over the hold (two to set up, one a week, one to exit), from the protocol's own
-// first chain. The verdict follows from the net cost and the implied value: skip when the farm costs
-// more than half the capital to run or the launch is under $1M implied, thin when gas is over 15% of
-// the capital or the launch is under $10M implied, farm otherwise. The farm steps themselves stay
-// six, each an action with a cost and a time.
-//
-//   implied = exp(intercept + slope * log(TVL) + category_effect)
-//             * growthMult * maturityMult * chainMult
+//   curve    = intercept + slope * log(TVL) + quad * (log(TVL) - center)^2 + category_effect
+//   neighbour = log(TVL) + log(median ratio of the K nearest traded comps)
+//   log(mcap) = (1 - w) * curve + w * neighbour,  w from the neighbour count and distance
+//   implied  = exp(log(mcap)) * growthMult * maturityMult * chainMult
 //   growthMult   = 1 + clamp(change_7d, -60, 120) / 100 * GROWTH_WEIGHT
 //   maturityMult = 0.6 + min(age_days, 1095) / 1095 * 0.4   (age unknown: 365 days)
 //   chainMult    = 1 + 0.02 * min(chains - 1, 5)
@@ -70,6 +77,12 @@ export interface ModelConstants {
   shrinkage_k: number;
   chain_step: number;
   chain_cap: number;
+  /** How many nearest traded comps price a row from its own neighbourhood. */
+  neighbour_k: number;
+  /** The most weight the neighbours may take from the fitted curve. */
+  neighbour_blend_max: number;
+  /** The log-distance over which the neighbour weight falls by a factor of e. */
+  neighbour_distance_scale: number;
   /** Gas over this share of the capital makes a farm a skip; over the thin share, a thin. */
   verdict_skip_gas_share: number;
   verdict_thin_gas_share: number;
@@ -89,14 +102,26 @@ export const MODEL: ModelConstants = {
   shrinkage_k: 5,
   chain_step: 0.02,
   chain_cap: 5,
-  verdict_skip_gas_share: 0.5,
-  verdict_thin_gas_share: 0.15,
+  neighbour_k: 8,
+  // The neighbour blend's ceiling is 0: the neighbours are reported, not priced in. Five blend
+  // designs were tested against the curve alone (cross-category fill, same-category only,
+  // fraction-weighted, K 5-12, ceiling 0.25-0.75, distance scale 0.5-2.0): the best LOO gain was
+  // 1.346 -> 1.312, but it reversed on the split test (five seeds: no-blend 1.324 average vs
+  // 1.395 for the best LOO config) and it made thin-category rows worse (LOO 1.392 -> 1.447,
+  // hit-within-2x 0.289 -> 0.200). The neighbour median mixes categories whose ratios genuinely
+  // differ, and same-category neighbours are too few and too far to add signal beyond the shrunk
+  // category effect. So every row still names its kin and its eight nearest traded neighbours
+  // (count, same-category count, median distance, median ratio) as comparables, at weight 0.
+  neighbour_blend_max: 0,
+  neighbour_distance_scale: 1.0,
+  verdict_skip_gas_share: 1.0,
+  verdict_thin_gas_share: 0.5,
   verdict_skip_implied_usd: 1_000_000,
   verdict_thin_implied_usd: 10_000_000,
 };
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-4';
+export const MODEL_VERSION = 'radar-5';
 
 /** How many bootstrap refits the rank ranges come from. */
 export const REFITS = 200;
@@ -104,40 +129,95 @@ export const REFITS = 200;
 /** The refits' seed: fixed, so two runs agree byte for byte. */
 export const REFIT_SEED = 20261119;
 
+/** The random-half split's seed: fixed, and different from the refits', so the two tests are independent draws. */
+export const SPLIT_SEED = 20261126;
+
 /** How many live-token protocols the Live token view carries, by market cap. */
 export const LIVE_ROWS = 24;
+
+/** One of the curve forms the blind tests choose between. */
+export type CurveForm = 'loglog' | 'quad' | 'median';
+
+/** The three forms, in the order the comparison table shows them. */
+export const CURVE_FORMS: CurveForm[] = ['loglog', 'quad', 'median'];
+
+/** A form's plain name, as the dashboard prints it. */
+export function formLabel(form: CurveForm): string {
+  if (form === 'loglog') return 'log-log line';
+  if (form === 'quad') return 'log-log quadratic';
+  return 'per-category median';
+}
 
 /** One category's fitted effect: the shrunk median residual, as a log shift and as a factor. */
 export interface CategoryEffect {
   category: string;
-  /** The log shift the category's comps add to the fitted curve. */
+  /** The log shift the category's comps add to the fitted curve (for the median form: the log of the category's shrunk multiple). */
   effect: number;
   /** exp(effect): the factor the category multiplies the fitted value by. */
   factor: number;
   comps: number;
 }
 
-/** The fitted comps curve, derived from the snapshot's own trading protocols. */
+/**
+ * A fitted comps curve, in one shape for all three forms: log(market cap) is
+ * intercept + slope * log(TVL) + quad * (log(TVL) - center)^2 + the category's effect.
+ * The log-log line has quad 0; the median form has intercept 0, slope 1 and quad 0, so its
+ * prediction is the TVL times the category's multiple, and a category with no peer falls back to
+ * the overall median instead of to zero.
+ */
 export interface DerivedFit {
+  form: CurveForm;
   intercept: number;
   slope: number;
-  /** The share of log(market cap)'s variance the curve explains in sample. */
+  quad: number;
+  /** The mean log(TVL) the quadratic centres on (0 for the other forms). */
+  center: number;
+  /** The share of log(market cap)'s variance the curve explains in sample (0 for the median form: it fits no line). */
   r2: number;
   comps: number;
-  /** The 90th percentile of |residual|: no category effect exceeds this in magnitude. */
+  /** The 90th percentile of |residual|: no category effect exceeds this in magnitude (0 for the median form). */
   residual_cap: number;
+  /** The effect a category with no trading peer gets: 0 for the fitted forms, log(overall median) for the median form. */
+  fallback_effect: number;
   by_category: CategoryEffect[];
 }
 
-/** The out-of-sample validation of the fitted curve, against the flat-median model it replaces. */
+/** One form's blind-test score: leave-one-out plus a seeded random-half split, combined. */
+export interface FormScore {
+  form: CurveForm;
+  label: string;
+  loo_n: number;
+  loo_median_abs_log_error: number;
+  loo_hit_within_2x: number;
+  split_train_n: number;
+  split_test_n: number;
+  split_median_abs_log_error: number | null;
+  split_hit_within_2x: number | null;
+  /** loo median + split median: the number the choice is made on (lower is better). */
+  combined: number;
+  chosen: boolean;
+}
+
+/** One category's leave-one-out error under the chosen form, for the categories with enough comps to say. */
+export interface CategoryLoo {
+  category: string;
+  n: number;
+  median_abs_log_error: number;
+  hit_within_2x: number;
+}
+
+/** The out-of-sample validation of the chosen form, and the blind-test comparison that chose it. */
 export interface Validation {
-  /** Leave-one-out over every comp: the fitted curve's median and mean absolute log error. */
+  /** The three forms' blind-test scores; the chosen one is flagged. */
+  forms: FormScore[];
+  chosen_form: CurveForm;
+  /** Leave-one-out over every comp, for the chosen form: median and mean absolute log error. */
   loo_n: number;
   loo_median_abs_log_error: number;
   loo_mean_abs_log_error: number;
-  /** The share of held-out comps the fitted curve predicts within a factor of two. */
+  /** The share of held-out comps the chosen form predicts within a factor of two. */
   loo_hit_within_2x: number;
-  /** The same leave-one-out test for the flat per-category median multiple model. */
+  /** The same leave-one-out test for the flat-median form: the baseline the winner had to beat. */
   loo_median_abs_log_error_baseline: number;
   loo_hit_within_2x_baseline: number;
   /** Walk-forward split: fit on comps listed on or before the cutoff, tested on the later ones. */
@@ -146,6 +226,14 @@ export interface Validation {
   walkforward_test_n: number;
   walkforward_median_abs_log_error: number | null;
   walkforward_hit_within_2x: number | null;
+  /** The random-half split for the chosen form: the second blind test. */
+  split_seed: number;
+  split_train_n: number;
+  split_test_n: number;
+  split_median_abs_log_error: number | null;
+  split_hit_within_2x: number | null;
+  /** Leave-one-out by category, for the categories with at least five comps. */
+  loo_by_category: CategoryLoo[];
   /** How many bootstrap refits the rank ranges come from. */
   refits: number;
 }
@@ -160,11 +248,28 @@ export interface Coverage {
   excluded_versioned: number;
 }
 
+/** One excluded pre-token protocol, with the reason it is not ranked. */
+export interface AuditRow {
+  slug: string;
+  name: string;
+  category: string | null;
+  tvl_usd: number;
+  reason: 'exchange' | 'versioned pool' | 'exchange + versioned pool';
+}
+
 /** A farm step: the action, what it costs, and how long it takes. */
 export interface FarmStep {
   text: string;
   cost: string;
   time: string;
+}
+
+/** The nearest traded comparable: the closest protocol that already has a token. */
+export interface Kin {
+  slug: string;
+  name: string;
+  /** Its market-cap-to-TVL ratio, from the snapshot. */
+  ratio: number;
 }
 
 /** What a farm costs, netted to the dollar, and the verdict the net cost earns. */
@@ -174,7 +279,26 @@ export interface FarmEconomics {
   net_cost_usd: number;
   transactions: number;
   hold_days: number;
+  /** The gas as a share of the capital: 1.0 means the fees equal the deposit. */
+  gas_share: number;
+  /** The time budget in hours: setup, one weekly action, the claim check, the log. */
+  time_hours: number;
+  /** The launch's implied value per dollar of farm cost: a screening ratio, never a promised return. */
+  implied_per_dollar: number;
+  /** The launch's implied value per hour of farm time: a screening ratio, never a promised return. */
+  implied_per_hour: number;
+  kin: Kin | null;
   verdict: 'farm' | 'thin' | 'skip';
+}
+
+/** A row's nearest traded neighbours: the local signal the fitted curve is blended with. */
+export interface NeighbourInfo {
+  count: number;
+  same_category: number;
+  median_log_distance: number;
+  median_ratio: number;
+  /** The weight the neighbours take in the blend, 0 when there is no neighbour close enough to matter. */
+  weight: number;
 }
 
 /** One row of board.json: the ranked board's row. */
@@ -197,7 +321,7 @@ export interface BoardRow {
   rank_range: [number, number];
   farm: FarmEconomics;
   model: {
-    /** The fitted multiple for this protocol: the fitted value over its TVL. */
+    /** The blended fitted multiple for this protocol: the blended fitted value over its TVL. */
     multiple: number;
     comp_count: number;
     category_effect: number;
@@ -206,6 +330,7 @@ export interface BoardRow {
     maturity_multiplier: number;
     chain_multiplier: number;
     age_days: number | null;
+    neighbours: NeighbourInfo;
   };
   farm_steps: string[];
 }
@@ -231,6 +356,7 @@ export interface RadarRow {
   growth_multiplier: number;
   maturity_multiplier: number;
   chain_multiplier: number;
+  neighbours: NeighbourInfo;
   watchlist: boolean;
   farm_steps: string[];
 }
@@ -246,7 +372,7 @@ export interface LiveRow {
   change_7d: number | null;
 }
 
-/** Everything the dashboard needs: the board, the live set, and the model it runs. */
+/** Everything the dashboard needs: the board, the live set, the audit, and the model it runs. */
 export interface RadarData {
   as_of: string;
   source: string;
@@ -256,6 +382,7 @@ export interface RadarData {
   fit: DerivedFit;
   validation: Validation;
   coverage: Coverage;
+  audit: AuditRow[];
   watchlist_size: number;
   board_size: number;
   early_size: number;
@@ -303,7 +430,7 @@ export function ageDays(asOf: string, listedAt: string | null): number | null {
   return Math.max(0, Math.floor((a - b) / DAY_MS));
 }
 
-/** A seeded PRNG (mulberry32): the refits' only source of randomness, fixed by REFIT_SEED. */
+/** A seeded PRNG (mulberry32): the refits' and the split's only source of randomness, fixed by seed. */
 export function mulberry32(seed: number): () => number {
   let t = seed >>> 0;
   return () => {
@@ -323,7 +450,7 @@ export function compSet(snapshot: Snapshot): SnapshotProtocol[] {
   return snapshot.protocols.filter((p) => p.mcap_usd !== null && p.mcap_usd > 0 && p.tvl_usd > 0);
 }
 
-/** Ordinary least squares for y = a + b*x, with R-squared; the flat-median fallback when it cannot fit. */
+/** Ordinary least squares for y = a + b*x, with R-squared; the flat fallback when it cannot fit. */
 function ols(xs: number[], ys: number[]): { a: number; b: number; r2: number } {
   const n = xs.length;
   const mx = xs.reduce((s, v) => s + v, 0) / n;
@@ -342,59 +469,301 @@ function ols(xs: number[], ys: number[]): { a: number; b: number; r2: number } {
   return { a, b, r2: syy > 0 ? (sxy * sxy) / (sxx * syy) : 0 };
 }
 
+/** A 3x3 linear system solved by Gaussian elimination with partial pivoting; null when singular. */
+function solve3(a: number[][], b: number[]): [number, number, number] | null {
+  const m = a.map((row, i) => [...row, b[i]!]);
+  for (let col = 0; col < 3; col++) {
+    let pivot = col;
+    for (let r = col + 1; r < 3; r++) if (Math.abs(m[r]![col]!) > Math.abs(m[pivot]![col]!)) pivot = r;
+    if (Math.abs(m[pivot]![col]!) < 1e-12) return null;
+    [m[col], m[pivot]] = [m[pivot]!, m[col]!];
+    for (let r = col + 1; r < 3; r++) {
+      const f = m[r]![col]! / m[col]![col]!;
+      for (let c = col; c < 4; c++) m[r]![c]! -= f * m[col]![c]!;
+    }
+  }
+  const x = [0, 0, 0];
+  for (let r = 2; r >= 0; r--) {
+    let s = m[r]![3]!;
+    for (let c = r + 1; c < 3; c++) s -= m[r]![c]! * x[c]!;
+    x[r] = s / m[r]![r]!;
+  }
+  return [x[0]!, x[1]!, x[2]!];
+}
+
 /**
- * The fitted comps curve: log(market cap) on log(TVL) by least squares over the comps, plus one
- * shrunk effect per category (the median residual of its comps, pulled toward zero by n/(n+K) and
- * capped at the 90th percentile of |residual|). With too few comps to fit, the curve falls back to
- * the overall median multiple: intercept log(median), slope 1, no effects.
+ * Ordinary least squares for y = a + b*z + c*z^2 with z = x - center, with R-squared; the flat
+ * fallback when the system is singular. Centring keeps the normal equations well conditioned: log
+ * TVL runs to the mid-twenties, and its square to the mid-hundreds.
  */
-export function fitModel(rows: SnapshotProtocol[], model: ModelConstants = MODEL): DerivedFit {
+function olsQuad(xs: number[], ys: number[]): { a: number; b: number; c: number; center: number; r2: number } {
+  const n = xs.length;
+  const center = xs.reduce((s, v) => s + v, 0) / n;
+  const my = ys.reduce((s, v) => s + v, 0) / n;
+  let s0 = n;
+  let s1 = 0;
+  let s2 = 0;
+  let s3 = 0;
+  let s4 = 0;
+  let t0 = 0;
+  let t1 = 0;
+  let t2 = 0;
+  let syy = 0;
+  for (let i = 0; i < n; i++) {
+    const z = xs[i]! - center;
+    const z2 = z * z;
+    s1 += z;
+    s2 += z2;
+    s3 += z2 * z;
+    s4 += z2 * z2;
+    t0 += ys[i]!;
+    t1 += z * ys[i]!;
+    t2 += z2 * ys[i]!;
+    syy += (ys[i]! - my) * (ys[i]! - my);
+  }
+  const sol = solve3(
+    [
+      [s0, s1, s2],
+      [s1, s2, s3],
+      [s2, s3, s4],
+    ],
+    [t0, t1, t2],
+  );
+  if (sol === null) return { a: my, b: 0, c: 0, center, r2: 0 };
+  const [a, b, c] = sol;
+  let sse = 0;
+  for (let i = 0; i < n; i++) {
+    const z = xs[i]! - center;
+    const pred = a + b * z + c * z * z;
+    sse += (ys[i]! - pred) * (ys[i]! - pred);
+  }
+  return { a, b, c, center, r2: syy > 0 ? 1 - sse / syy : 0 };
+}
+
+/** The flat fallback fit: the overall median multiple, no curve and no effects. */
+function fallbackFit(rows: SnapshotProtocol[], form: CurveForm): DerivedFit {
   const ratios = rows.map((p) => p.mcap_usd! / p.tvl_usd);
   const overall = median(ratios);
-  if (rows.length < 10) {
-    return { intercept: Math.log(overall), slope: 1, r2: 0, comps: rows.length, residual_cap: 0, by_category: [] };
+  return {
+    form,
+    intercept: Math.log(overall),
+    slope: 1,
+    quad: 0,
+    center: 0,
+    r2: 0,
+    comps: rows.length,
+    residual_cap: 0,
+    fallback_effect: 0,
+    by_category: [],
+  };
+}
+
+/**
+ * The fitted comps curve, in the requested form, over the given comps:
+ * - loglog: log(market cap) on log(TVL) by least squares, plus one shrunk effect per category
+ *   (the median residual of its comps, pulled toward zero by n/(n+K), capped at the 90th
+ *   percentile of |residual|).
+ * - quad: the same, with a quadratic term in centred log(TVL), so the curve may bend.
+ * - median: no line at all — each category's shrunk median multiple, stored as a log effect, so
+ *   the prediction is the TVL times the category's multiple, and a category with no peer falls
+ *   back to the overall median. With too few comps to fit, every form falls back to the overall
+ *   median multiple.
+ */
+export function fitModel(rows: SnapshotProtocol[], form: CurveForm, model: ModelConstants = MODEL): DerivedFit {
+  const ratios = rows.map((p) => p.mcap_usd! / p.tvl_usd);
+  const overall = median(ratios);
+  if (rows.length < 10) return fallbackFit(rows, form);
+  const logTvl = rows.map((p) => Math.log(p.tvl_usd));
+  const logMcap = rows.map((p) => Math.log(p.mcap_usd!));
+
+  if (form === 'median') {
+    const cap = quantile(ratios, 0.9);
+    const byCat = new Map<string, number[]>();
+    rows.forEach((p) => {
+      const key = p.category ?? '(uncategorised)';
+      const list = byCat.get(key) ?? [];
+      list.push(p.mcap_usd! / p.tvl_usd);
+      byCat.set(key, list);
+    });
+    const table: CategoryEffect[] = [...byCat.entries()]
+      .map(([category, list]) => {
+        const w = list.length / (list.length + model.shrinkage_k);
+        const multiple = Math.min(w * median(list) + (1 - w) * overall, cap);
+        return { category, effect: round4(Math.log(multiple)), factor: round4(multiple), comps: list.length };
+      })
+      .sort((x, y) => (x.category < y.category ? -1 : x.category > y.category ? 1 : 0));
+    return {
+      form,
+      intercept: 0,
+      slope: 1,
+      quad: 0,
+      center: 0,
+      r2: 0,
+      comps: rows.length,
+      residual_cap: 0,
+      fallback_effect: round4(Math.log(overall)),
+      by_category: table,
+    };
   }
-  const { a, b, r2 } = ols(
-    rows.map((p) => Math.log(p.tvl_usd)),
-    rows.map((p) => Math.log(p.mcap_usd!)),
-  );
-  const residuals = rows.map((p) => Math.log(p.mcap_usd!) - (a + b * Math.log(p.tvl_usd)));
+
+  const curve = form === 'quad' ? olsQuad(logTvl, logMcap) : { ...ols(logTvl, logMcap), c: 0, center: 0 };
+  // Stored in the unified form intercept + slope*log(TVL) + quad*(log(TVL)-center)^2: the centred
+  // quadratic a + b*z + c*z^2, z = log(TVL) - center, is the same curve with intercept a - b*center.
+  const intercept = form === 'quad' ? curve.a - curve.b * curve.center : curve.a;
+  const slope = curve.b;
+  const quad = curve.c;
+  const center = curve.center;
+  const residuals = rows.map((p, i) => {
+    const z = logTvl[i]! - center;
+    return logMcap[i]! - (intercept + slope * logTvl[i]! + quad * z * z);
+  });
   const cap = quantile(residuals.map((r) => Math.abs(r)), 0.9);
-  const byCategory = new Map<string, number[]>();
+  const byCat = new Map<string, number[]>();
   rows.forEach((p, i) => {
     const key = p.category ?? '(uncategorised)';
-    const list = byCategory.get(key) ?? [];
+    const list = byCat.get(key) ?? [];
     list.push(residuals[i]!);
-    byCategory.set(key, list);
+    byCat.set(key, list);
   });
-  const table: CategoryEffect[] = [...byCategory.entries()]
+  const table: CategoryEffect[] = [...byCat.entries()]
     .map(([category, res]) => {
       const w = res.length / (res.length + model.shrinkage_k);
       const effect = Math.max(-cap, Math.min(cap, w * median(res)));
       return { category, effect: round4(effect), factor: round4(Math.exp(effect)), comps: res.length };
     })
     .sort((x, y) => (x.category < y.category ? -1 : x.category > y.category ? 1 : 0));
-  return { intercept: round4(a), slope: round4(b), r2: round4(r2), comps: rows.length, residual_cap: round4(cap), by_category: table };
+  return {
+    form,
+    intercept: round4(intercept),
+    slope: round4(slope),
+    quad: round4(quad),
+    center: round4(center),
+    r2: round4(curve.r2),
+    comps: rows.length,
+    residual_cap: round4(cap),
+    fallback_effect: 0,
+    by_category: table,
+  };
 }
 
-/** A category's fitted effect out of the derived fit, or zero when the category has no comps. */
-function effectFor(category: string | null, fit: DerivedFit): { effect: number; comps: number } {
+/** A category's fitted effect out of the derived fit, or the fallback when the category has no comps. */
+export function effectFor(category: string | null, fit: DerivedFit): { effect: number; comps: number } {
   const key = category ?? '(uncategorised)';
   const row = fit.by_category.find((r) => r.category === key);
-  if (row === undefined) return { effect: 0, comps: 0 };
+  if (row === undefined) return { effect: fit.fallback_effect, comps: 0 };
   return { effect: row.effect, comps: row.comps };
 }
 
-/** The multipliers and the implied value one protocol gets under the fitted curve. */
+/** The log-distance in TVL between two protocols; Infinity when either TVL is not positive. */
+function logDistance(a: SnapshotProtocol, b: SnapshotProtocol): number {
+  if (a.tvl_usd <= 0 || b.tvl_usd <= 0) return Infinity;
+  return Math.abs(Math.log(a.tvl_usd) - Math.log(b.tvl_usd));
+}
+
+/**
+ * A protocol's nearest traded neighbours: the K comps closest in log(TVL), same category first,
+ * then the nearest of any category to fill the set. The pool is deduped by slug first, so a
+ * bootstrap resample never counts one protocol twice. The blend weight grows with the neighbour
+ * count and falls with their median distance: w = min(max, n/(n+4) * exp(-d/scale)) — and the
+ * shipped ceiling is 0, so the neighbours are reported as comparables and never move the
+ * prediction (see the MODEL comment for the blind-test evidence). The kin is the single nearest
+ * neighbour — the closest protocol that already trades.
+ */
+export function neighboursFor(
+  protocol: SnapshotProtocol,
+  pool: SnapshotProtocol[],
+  model: ModelConstants = MODEL,
+): { neighbours: NeighbourInfo; kin: Kin | null } {
+  const seen = new Map<string, SnapshotProtocol>();
+  for (const p of pool) if (!seen.has(p.slug)) seen.set(p.slug, p);
+  const comps = [...seen.values()];
+  const key = protocol.category ?? '(uncategorised)';
+  const byDistance = (a: SnapshotProtocol, b: SnapshotProtocol): number =>
+    logDistance(protocol, a) - logDistance(protocol, b) || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0);
+  const same = comps.filter((p) => (p.category ?? '(uncategorised)') === key).sort(byDistance);
+  const picked = same.slice(0, model.neighbour_k);
+  if (picked.length < model.neighbour_k) {
+    const have = new Set(picked.map((p) => p.slug));
+    const rest = comps.filter((p) => !have.has(p.slug)).sort(byDistance);
+    picked.push(...rest.slice(0, model.neighbour_k - picked.length));
+  }
+  if (picked.length === 0) {
+    return { neighbours: { count: 0, same_category: 0, median_log_distance: 0, median_ratio: 0, weight: 0 }, kin: null };
+  }
+  const distances = picked.map((p) => logDistance(protocol, p));
+  const d = median(distances);
+  const medianRatio = median(picked.map((p) => p.mcap_usd! / p.tvl_usd));
+  const n = picked.length;
+  const weight = Number.isFinite(d)
+    ? Math.min(model.neighbour_blend_max, (n / (n + 4)) * Math.exp(-d / model.neighbour_distance_scale))
+    : 0;
+  const nearest = picked[0]!;
+  return {
+    neighbours: {
+      count: n,
+      same_category: picked.filter((p) => (p.category ?? '(uncategorised)') === key).length,
+      median_log_distance: round4(d),
+      median_ratio: round4(medianRatio),
+      weight: round4(weight),
+    },
+    kin: { slug: nearest.slug, name: nearest.name, ratio: round4(nearest.mcap_usd! / nearest.tvl_usd) },
+  };
+}
+
+/** The curve's own log(market cap) prediction for one protocol, before the neighbour blend. */
+function curveLogMcap(logTvl: number, effect: number, fit: DerivedFit): number {
+  const z = logTvl - fit.center;
+  return fit.intercept + fit.slope * logTvl + fit.quad * z * z + effect;
+}
+
+/**
+ * The full log(market cap) prediction for one protocol: the fitted curve, blended with the
+ * neighbours' median ratio at the weight the neighbours earn — which the shipped constants set to
+ * zero, so the prediction is the curve alone and the neighbours stay comparables. The pool is the
+ * comp set the neighbours are drawn from — the full comps for the board, the training set in a
+ * blind test, so a held-out protocol never prices itself from its own record.
+ */
+export function predictLogMcap(
+  protocol: SnapshotProtocol,
+  fit: DerivedFit,
+  pool: SnapshotProtocol[],
+  model: ModelConstants = MODEL,
+): { log_pred: number; curve_log_pred: number; effect: number; comps: number; neighbours: NeighbourInfo; kin: Kin | null } {
+  const logTvl = Math.log(protocol.tvl_usd);
+  const { effect, comps } = effectFor(protocol.category, fit);
+  const curve = curveLogMcap(logTvl, effect, fit);
+  const { neighbours, kin } = neighboursFor(protocol, pool, model);
+  let logPred = curve;
+  if (neighbours.count > 0 && neighbours.weight > 0 && neighbours.median_ratio > 0 && Number.isFinite(logTvl)) {
+    const neighbourLog = logTvl + Math.log(neighbours.median_ratio);
+    logPred = (1 - neighbours.weight) * curve + neighbours.weight * neighbourLog;
+  }
+  return { log_pred: logPred, curve_log_pred: curve, effect, comps, neighbours, kin };
+}
+
+/** The multipliers and the implied value one protocol gets under the fitted curve and its neighbours. */
 export function impliedValue(
   protocol: SnapshotProtocol,
   asOf: string,
   fit: DerivedFit,
+  pool: SnapshotProtocol[],
   model: ModelConstants = MODEL,
-): { implied: number; multiple: number; effect: number; comps: number; growthPct: number; growthMult: number; maturityMult: number; chainMult: number; age: number | null } {
+): {
+  implied: number;
+  multiple: number;
+  effect: number;
+  comps: number;
+  neighbours: NeighbourInfo;
+  kin: Kin | null;
+  growthPct: number;
+  growthMult: number;
+  maturityMult: number;
+  chainMult: number;
+  age: number | null;
+} {
   const age = ageDays(asOf, protocol.listed_at);
-  const { effect, comps } = effectFor(protocol.category, fit);
-  const fitted = Math.exp(fit.intercept + fit.slope * Math.log(protocol.tvl_usd) + effect);
+  const pred = predictLogMcap(protocol, fit, pool, model);
+  const fitted = Math.exp(pred.log_pred);
   const rawGrowth = finite(protocol.change_7d, 0);
   const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
   const growthMult = 1 + (growthPct / 100) * model.growth_weight;
@@ -402,22 +771,19 @@ export function impliedValue(
   const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
   const chainMult = 1 + model.chain_step * Math.min(Math.max(protocol.chains.length - 1, 0), model.chain_cap);
   const implied = Math.max(1, Math.round(fitted * growthMult * maturityMult * chainMult));
-  return { implied, multiple: fitted / protocol.tvl_usd, effect, comps, growthPct, growthMult, maturityMult, chainMult, age };
-}
-
-/**
- * The flat per-category median multiple one protocol gets from a comp set: radar-3's model, kept as
- * the validation baseline so the fitted curve's out-of-sample gain is measured, not claimed.
- */
-function medianMultipleFor(category: string | null, rows: SnapshotProtocol[], model: ModelConstants): number {
-  const ratios = rows.map((p) => p.mcap_usd! / p.tvl_usd);
-  const overall = median(ratios);
-  const cap = quantile(ratios, 0.9);
-  const key = category ?? '(uncategorised)';
-  const cat = rows.filter((p) => (p.category ?? '(uncategorised)') === key).map((p) => p.mcap_usd! / p.tvl_usd);
-  if (cat.length === 0) return overall;
-  const w = cat.length / (cat.length + model.shrinkage_k);
-  return Math.min(w * median(cat) + (1 - w) * overall, cap);
+  return {
+    implied,
+    multiple: protocol.tvl_usd > 0 ? fitted / protocol.tvl_usd : 0,
+    effect: pred.effect,
+    comps: pred.comps,
+    neighbours: pred.neighbours,
+    kin: pred.kin,
+    growthPct,
+    growthMult,
+    maturityMult,
+    chainMult,
+    age,
+  };
 }
 
 /** The share of absolute log errors under log(2): predicted within a factor of two. */
@@ -426,25 +792,91 @@ function hitWithin2x(errors: number[]): number {
   return errors.filter((e) => e < Math.log(2)).length / errors.length;
 }
 
+/** A seeded shuffle (Fisher-Yates): the random-half split's only source of randomness. */
+function shuffled<T>(items: T[], seed: number): T[] {
+  const rng = mulberry32(seed);
+  const out = [...items];
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1));
+    [out[i], out[j]] = [out[j]!, out[i]!];
+  }
+  return out;
+}
+
 /**
- * The fitted curve's out-of-sample validation: leave-one-out over every comp (fitted curve and
- * flat-median baseline side by side), and a walk-forward-style split that fits on the comps listed
- * on or before the median listing date and tests on the ones listed after. Comps without a listing
- * date sit out of the split only; the leave-one-out test uses them all.
+ * Leave-one-out errors for one form over the comps: each comp held out in turn, the form fitted
+ * on the rest, the held-out comp predicted from the training set alone (its neighbours drawn from
+ * the training set too, so it never prices itself). Returns the errors with each held-out comp's
+ * category, for the per-category table.
  */
-export function validateModel(comps: SnapshotProtocol[], model: ModelConstants = MODEL): Validation {
-  const looFit: number[] = [];
-  const looBase: number[] = [];
+export function looErrors(form: CurveForm, comps: SnapshotProtocol[], model: ModelConstants = MODEL): { error: number; category: string }[] {
+  const out: { error: number; category: string }[] = [];
   for (let i = 0; i < comps.length; i++) {
     const rest = comps.filter((_, j) => j !== i);
     const held = comps[i]!;
-    const fit = fitModel(rest, model);
-    const { effect } = effectFor(held.category, fit);
-    const predFit = fit.intercept + fit.slope * Math.log(held.tvl_usd) + effect;
-    looFit.push(Math.abs(predFit - Math.log(held.mcap_usd!)));
-    const predBase = Math.log(held.tvl_usd * medianMultipleFor(held.category, rest, model));
-    looBase.push(Math.abs(predBase - Math.log(held.mcap_usd!)));
+    const fit = fitModel(rest, form, model);
+    const pred = predictLogMcap(held, fit, rest, model);
+    out.push({ error: Math.abs(pred.log_pred - Math.log(held.mcap_usd!)), category: held.category ?? '(uncategorised)' });
   }
+  return out;
+}
+
+/**
+ * The seeded random-half split for one form: fit half the comps, test the other half. The split
+ * is the second blind test: where leave-one-out reuses nearly all the data for every prediction,
+ * the split trains on half and tests on the half it never saw.
+ */
+export function splitErrors(form: CurveForm, comps: SnapshotProtocol[], model: ModelConstants = MODEL): { train_n: number; test_n: number; errors: number[] } {
+  const order = shuffled(comps, SPLIT_SEED);
+  const half = Math.floor(order.length / 2);
+  const train = order.slice(0, half);
+  const test = order.slice(half);
+  if (train.length < 5 || test.length < 5) return { train_n: train.length, test_n: test.length, errors: [] };
+  const fit = fitModel(train, form, model);
+  const errors = test.map((p) => Math.abs(predictLogMcap(p, fit, train, model).log_pred - Math.log(p.mcap_usd!)));
+  return { train_n: train.length, test_n: test.length, errors };
+}
+
+/**
+ * The whole blind-test comparison, and the chosen form's full validation. Each of the three forms
+ * is scored by leave-one-out plus the random-half split; the form with the lowest combined median
+ * error (LOO median + split median) is the one the board uses. The winner is then checked a third
+ * way, by a walk-forward split that fits the comps listed on or before the median listing date
+ * and tests the ones listed after, and a fourth way, by leave-one-out grouped by category.
+ */
+export function validateAll(comps: SnapshotProtocol[], model: ModelConstants = MODEL): { forms: FormScore[]; validation: Validation } {
+  const forms: FormScore[] = [];
+  const looByForm = new Map<CurveForm, { error: number; category: string }[]>();
+  for (const form of CURVE_FORMS) {
+    const loo = looErrors(form, comps, model);
+    looByForm.set(form, loo);
+    const split = splitErrors(form, comps, model);
+    const looVals = loo.map((r) => r.error);
+    const looMedian = median(looVals);
+    const splitMedian = split.errors.length > 0 ? median(split.errors) : null;
+    forms.push({
+      form,
+      label: formLabel(form),
+      loo_n: comps.length,
+      loo_median_abs_log_error: round4(looMedian),
+      loo_hit_within_2x: round4(hitWithin2x(looVals)),
+      split_train_n: split.train_n,
+      split_test_n: split.test_n,
+      split_median_abs_log_error: splitMedian === null ? null : round4(splitMedian),
+      split_hit_within_2x: split.errors.length > 0 ? round4(hitWithin2x(split.errors)) : null,
+      combined: round4(looMedian + (splitMedian ?? looMedian)),
+      chosen: false,
+    });
+  }
+  forms.sort((a, b) => a.combined - b.combined || (a.form < b.form ? -1 : 1));
+  const winner = forms[0]!;
+  winner.chosen = true;
+  const chosenForm = winner.form;
+  const chosenLoo = looByForm.get(chosenForm)!;
+  const chosenLooVals = chosenLoo.map((r) => r.error);
+  const medianForm = forms.find((f) => f.form === 'median')!;
+
+  // Walk-forward, for the chosen form: fit the older comps, test the newer ones.
   const dated = comps.filter((p) => p.listed_at !== null && Number.isFinite(Date.parse(p.listed_at)));
   let cutoff: string | null = null;
   let trainN = 0;
@@ -460,41 +892,68 @@ export function validateModel(comps: SnapshotProtocol[], model: ModelConstants =
     trainN = train.length;
     testN = test.length;
     if (train.length >= 5 && test.length >= 5) {
-      const fit = fitModel(train, model);
-      const errs = test.map((p) => {
-        const { effect } = effectFor(p.category, fit);
-        return Math.abs(fit.intercept + fit.slope * Math.log(p.tvl_usd) + effect - Math.log(p.mcap_usd!));
-      });
+      const fit = fitModel(train, chosenForm, model);
+      const errs = test.map((p) => Math.abs(predictLogMcap(p, fit, train, model).log_pred - Math.log(p.mcap_usd!)));
       wfMedian = round4(median(errs));
       wfHit = round4(hitWithin2x(errs));
     }
   }
-  return {
+
+  // Leave-one-out by category, for the categories with at least five comps.
+  const byCat = new Map<string, number[]>();
+  for (const r of chosenLoo) {
+    const list = byCat.get(r.category) ?? [];
+    list.push(r.error);
+    byCat.set(r.category, list);
+  }
+  const looByCategory: CategoryLoo[] = [...byCat.entries()]
+    .filter(([, errs]) => errs.length >= 5)
+    .map(([category, errs]) => ({
+      category,
+      n: errs.length,
+      median_abs_log_error: round4(median(errs)),
+      hit_within_2x: round4(hitWithin2x(errs)),
+    }))
+    .sort((a, b) => b.n - a.n || (a.category < b.category ? -1 : 1))
+    .slice(0, 10);
+
+  const validation: Validation = {
+    forms,
+    chosen_form: chosenForm,
     loo_n: comps.length,
-    loo_median_abs_log_error: round4(median(looFit)),
-    loo_mean_abs_log_error: round4(looFit.reduce((s, v) => s + v, 0) / Math.max(looFit.length, 1)),
-    loo_hit_within_2x: round4(hitWithin2x(looFit)),
-    loo_median_abs_log_error_baseline: round4(median(looBase)),
-    loo_hit_within_2x_baseline: round4(hitWithin2x(looBase)),
+    loo_median_abs_log_error: winner.loo_median_abs_log_error,
+    loo_mean_abs_log_error: round4(chosenLooVals.reduce((s, v) => s + v, 0) / Math.max(chosenLooVals.length, 1)),
+    loo_hit_within_2x: winner.loo_hit_within_2x,
+    loo_median_abs_log_error_baseline: medianForm.loo_median_abs_log_error,
+    loo_hit_within_2x_baseline: medianForm.loo_hit_within_2x,
     walkforward_cutoff: cutoff,
     walkforward_train_n: trainN,
     walkforward_test_n: testN,
     walkforward_median_abs_log_error: wfMedian,
     walkforward_hit_within_2x: wfHit,
+    split_seed: SPLIT_SEED,
+    split_train_n: winner.split_train_n,
+    split_test_n: winner.split_test_n,
+    split_median_abs_log_error: winner.split_median_abs_log_error,
+    split_hit_within_2x: winner.split_hit_within_2x,
+    loo_by_category: looByCategory,
     refits: REFITS,
   };
+  return { forms, validation };
 }
 
 /**
- * Every board protocol's p10-p90 rank range over REFITS bootstrap refits of the curve: each refit
- * resamples the comps with replacement (the seeded PRNG, so the ranges are the same every run),
- * refits, re-scores the whole board and re-ranks it. Top rows hold tight ranges; mid-board rows sit
- * close together in implied value, so theirs run wide — the range says so instead of hiding it.
+ * Every board protocol's p10-p90 rank range over REFITS bootstrap refits of the chosen form: each
+ * refit resamples the comps with replacement (the seeded PRNG, so the ranges are the same every
+ * run), refits, re-scores the whole board and re-ranks it. Top rows hold tight ranges; mid-board
+ * rows sit close together in implied value, so theirs run wide — the range says so instead of
+ * hiding it.
  */
 export function rankRanges(
   protocols: SnapshotProtocol[],
   comps: SnapshotProtocol[],
   asOf: string,
+  form: CurveForm,
   model: ModelConstants = MODEL,
 ): Map<string, [number, number]> {
   const rng = mulberry32(REFIT_SEED);
@@ -502,9 +961,9 @@ export function rankRanges(
   for (let k = 0; k < REFITS; k++) {
     const sample: SnapshotProtocol[] = [];
     for (let i = 0; i < comps.length; i++) sample.push(comps[Math.floor(rng() * comps.length)]!);
-    const fit = fitModel(sample, model);
+    const fit = fitModel(sample, form, model);
     const scored = protocols
-      .map((p) => ({ slug: p.slug, implied: impliedValue(p, asOf, fit, model).implied }))
+      .map((p) => ({ slug: p.slug, implied: impliedValue(p, asOf, fit, sample, model).implied }))
       .sort((a, b) => b.implied - a.implied || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
     scored.forEach((s, i) => ranks.get(s.slug)!.push(i + 1));
   }
@@ -535,6 +994,7 @@ function bySlug(protocols: SnapshotProtocol[]): Map<string, SnapshotProtocol> {
 export function buildBoard(
   snapshot: Snapshot,
   fit: DerivedFit,
+  pool: SnapshotProtocol[],
   ranges: Map<string, [number, number]>,
   model: ModelConstants = MODEL,
 ): BoardRow[] {
@@ -551,7 +1011,7 @@ export function buildBoard(
   }
 
   const scored = [...chosen.values()].map((p) => {
-    const v = impliedValue(p, snapshot.as_of, fit, model);
+    const v = impliedValue(p, snapshot.as_of, fit, pool, model);
     return { p, ...v };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
@@ -571,7 +1031,7 @@ export function buildBoard(
     age_days: s.age,
     implied_value_usd: s.implied,
     rank_range: ranges.get(s.p.slug) ?? [i + 1, i + 1],
-    farm: farmEconomics(s.p, s.age, s.implied, model),
+    farm: farmEconomics(s.p, s.age, s.implied, s.kin, model),
     model: {
       multiple: round4(s.multiple),
       comp_count: s.comps,
@@ -581,6 +1041,7 @@ export function buildBoard(
       maturity_multiplier: round4(s.maturityMult),
       chain_multiplier: round4(s.chainMult),
       age_days: s.age,
+      neighbours: s.neighbours,
     },
     farm_steps: farmSteps(s.p, s.age).map(stepText),
   }));
@@ -640,23 +1101,55 @@ function transactionsFor(holdDays: number): number {
 }
 
 /**
- * What a farm costs, netted to the dollar: the capital the position needs plus every transaction's
- * gas over the hold, on the protocol's own first chain. The verdict follows from the net cost and
- * the launch's scale: a farm that costs more than half its capital to run, or chases a launch under
- * $1M implied, is a skip; gas over 15% of the capital, or a launch under $10M implied, is thin;
- * the rest is a farm.
+ * The farm's time budget in minutes: 5 to set up the wallet, 15 to set up the position, 10 for
+ * each weekly qualifying action, 10 to check the claim page before withdrawing, 5 to keep the
+ * log. The hold itself is passive and costs no time.
  */
-export function farmEconomics(p: SnapshotProtocol, age: number | null, implied: number, model: ModelConstants = MODEL): FarmEconomics {
+function timeMinutesFor(holdDays: number): number {
+  return 5 + 15 + 10 * Math.ceil(holdDays / 7) + 10 + 5;
+}
+
+/**
+ * What a farm costs, netted to the dollar: the capital the position needs plus every transaction's
+ * gas over the hold, on the protocol's own first chain — and what it costs in time, and what the
+ * launch's scale is per dollar and per hour of farming. The verdict follows from the net cost and
+ * the launch's scale: a farm whose gas alone exceeds its capital, or whose launch is under $1M
+ * implied, is a skip; gas over half the capital, or a launch under $10M implied, is thin; the
+ * rest is a farm. The thresholds were recalibrated from radar-4's (skip at gas over half the
+ * capital): on this snapshot every one of radar-4's 80 skips came from that gas rule alone, all
+ * small-capital rows on expensive chains, so the skip line moved to where the fees exceed the
+ * deposit itself.
+ */
+export function farmEconomics(
+  p: SnapshotProtocol,
+  age: number | null,
+  implied: number,
+  kin: Kin | null,
+  model: ModelConstants = MODEL,
+): FarmEconomics {
   const capital = capitalFor(p);
   const hold = holdDaysFor(age);
   const transactions = transactionsFor(hold);
   const gas = round2(transactions * gasUsd(chainOf(p)));
   const net = round2(capital + gas);
   const gasShare = gas / capital;
+  const timeHours = round2(timeMinutesFor(hold) / 60);
   let verdict: FarmEconomics['verdict'] = 'farm';
   if (implied < model.verdict_skip_implied_usd || gasShare > model.verdict_skip_gas_share) verdict = 'skip';
   else if (implied < model.verdict_thin_implied_usd || gasShare > model.verdict_thin_gas_share) verdict = 'thin';
-  return { capital_usd: capital, gas_usd: gas, net_cost_usd: net, transactions, hold_days: hold, verdict };
+  return {
+    capital_usd: capital,
+    gas_usd: gas,
+    net_cost_usd: net,
+    transactions,
+    hold_days: hold,
+    gas_share: round4(gasShare),
+    time_hours: timeHours,
+    implied_per_dollar: Math.round(implied / net),
+    implied_per_hour: Math.round(implied / timeHours),
+    kin,
+    verdict,
+  };
 }
 
 /** The category's one action, in the words a farmer can follow. */
@@ -778,6 +1271,7 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
     growth_multiplier: row.model.growth_multiplier,
     maturity_multiplier: row.model.maturity_multiplier,
     chain_multiplier: row.model.chain_multiplier,
+    neighbours: row.model.neighbours,
     watchlist: watchlist.has(row.slug),
     farm_steps: row.farm_steps,
   };
@@ -803,11 +1297,35 @@ export function coverageOf(snapshot: Snapshot, board: BoardRow[]): Coverage {
   return { total: snapshot.protocols.length, ranked: board.length, live, excluded, excluded_cex: excludedCex, excluded_versioned: excludedVersioned };
 }
 
+/**
+ * The audit: every pre-token protocol the board does not rank, with the reason, by TVL. A protocol
+ * is excluded for being an exchange, for being a versioned pool of another protocol, or for both;
+ * the audit names each one, so the 342 pre-token protocols are all accounted for: 289 ranked and
+ * 53 excluded with a reason.
+ */
+export function auditOf(snapshot: Snapshot, board: BoardRow[]): AuditRow[] {
+  const onBoard = new Set(board.map((r) => r.slug));
+  return snapshot.protocols
+    .filter((p) => isPreToken(p) && !onBoard.has(p.slug))
+    .map((p) => {
+      const isCex = p.category === 'CEX';
+      const isVersioned = VERSIONED.test(p.name);
+      return {
+        slug: p.slug,
+        name: p.name,
+        category: p.category,
+        tvl_usd: p.tvl_usd,
+        reason: isCex && isVersioned ? 'exchange + versioned pool' : isCex ? 'exchange' : 'versioned pool',
+      };
+    })
+    .sort((a, b) => b.tvl_usd - a.tvl_usd || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
+}
+
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
   const comps = compSet(snapshot);
-  const fit = fitModel(comps, model);
-  const validation = validateModel(comps, model);
+  const { forms, validation } = validateAll(comps, model);
+  const fit = fitModel(comps, validation.chosen_form, model);
   const boardProtos = (() => {
     const index = bySlug(snapshot.protocols);
     const chosen = new Map<string, SnapshotProtocol>();
@@ -820,8 +1338,8 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     }
     return [...chosen.values()];
   })();
-  const ranges = rankRanges(boardProtos, comps, snapshot.as_of, model);
-  const board = buildBoard(snapshot, fit, ranges, model);
+  const ranges = rankRanges(boardProtos, comps, snapshot.as_of, validation.chosen_form, model);
+  const board = buildBoard(snapshot, fit, comps, ranges, model);
   const live = liveRows(snapshot);
   const early = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
   const radar: RadarData = {
@@ -833,6 +1351,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     fit,
     validation,
     coverage: coverageOf(snapshot, board),
+    audit: auditOf(snapshot, board),
     watchlist_size: snapshot.watchlist.length,
     board_size: board.length,
     early_size: early,
@@ -905,6 +1424,8 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
     if (r.implied_value_usd > 100_000_000_000_000) return `${r.slug} has implied value over the cap`;
     const [lo, hi] = r.rank_range;
     if (!Number.isSafeInteger(lo) || !Number.isSafeInteger(hi) || lo < 1 || hi > board.length || lo > hi) return `${r.slug} has rank range ${lo}-${hi}`;
+    if (!Number.isFinite(r.farm.implied_per_dollar) || r.farm.implied_per_dollar <= 0) return `${r.slug} has implied-per-dollar ${r.farm.implied_per_dollar}`;
+    if (!Number.isFinite(r.model.neighbours.weight) || r.model.neighbours.weight < 0 || r.model.neighbours.weight > 1) return `${r.slug} has neighbour weight ${r.model.neighbours.weight}`;
   }
   return null;
 }

@@ -19,12 +19,14 @@ protocols as of 2026-11-14), scores every pre-token protocol, and writes:
   its validation in the top-level `model` block
 - `data.js` — the same board as a script the dashboard reads, no network
 - `dashboard/` — a static, sortable, filterable board with a detail view per
-  protocol, a KPI strip, a movers section and a validation panel
-- `screenshots/` — the board, a detail view and the validation panel
+  protocol, a KPI strip, a movers section, a validation panel with the
+  curve-form comparison and per-category errors, and an audit of every
+  protocol the board does not rank
+- `screenshots/` — the board, a detail view, the validation panel and the audit
 - `dossier.json` — the summary the judge reads, built with the vendored
   `makefun-board` library
 
-## The model (`radar-4`)
+## The model (`radar-5`)
 
 The implied value follows only from the snapshot's own figures. The value model
 is a log-log comps curve FITTED on the protocols that already trade, on every
@@ -49,24 +51,48 @@ invented number.
 The fit is validated out of sample, and the numbers are printed in the
 dashboard and in `board.json`:
 
+- **Curve form picked by two blind tests**: three forms — a log-log line, a
+  log-log quadratic and a per-category median — are each scored by
+  leave-one-out over all 128 comps and by a seeded random-half split (fit half
+  the comps, test the other half). The combined score is the two medians added;
+  the log-log line wins (2.66, against 2.69 for the quadratic and 3.34 for the
+  median) and prices the board.
 - **Leave-one-out** over all 128 comps: median absolute log error 1.35 (×3.8),
   33% predicted within 2× — against 1.63 (×5.1) and 20% for the flat per-category
-  median multiple the fit replaces.
+  median multiple the fit replaces. The dashboard also breaks the test down by
+  category (RWA best at 0.38, Yield worst at 1.76).
+- **Random-half split** (seed 20261126): median absolute log error 1.31, 30%
+  within 2×.
 - **Walk-forward split**: fit on the 48 comps listed up to 2024-02-18, tested on
   the 47 newer ones: median absolute log error 1.13, 32% within 2×.
 - **Rank ranges**: the curve is refit 200 times on bootstrap resamples of the
   comps (seeded, so two runs agree byte for byte); every row carries its p10–p90
   rank range.
 
+Every row also names its nearest traded comparable (kin) and its eight nearest
+size neighbours — as comparables only. Five neighbour-blend designs were tested
+as a pricing input (cross-category fill, same-category only, fraction-weighted;
+K 5–12, ceiling 0.25–0.75): the best leave-one-out gain (1.346 → 1.312) reversed
+on the split test and made thin-category rows worse, so the blend weight is 0
+and the fitted curve alone prices the board.
+
 The board covers all 289 rankable pre-token protocols, and the dashboard
 accounts for the whole snapshot: 289 ranked + 416 live-token + 53 excluded
-(42 exchanges, 11 versioned pools) = 758.
+(42 exchanges, 11 versioned pools) = 758. The audit section lists every one of
+the 53 excluded protocols with its reason, so all 342 pre-token protocols are
+accounted for.
 
 Farm plans are derived from each protocol's own record (category, chains, TVL,
 age): six steps with a cost and a time each, gas figures fitted to the chain —
 and the cost is netted to the dollar (capital plus every transaction's gas over
-the hold: two to set up, one a week, one to exit), with a verdict per row: farm,
-thin or skip.
+the hold: two to set up, one a week, one to exit), with an explicit time budget
+in hours, gas as a share of the capital, and the implied value per $1 of farm
+cost and per hour of work. The verdict per row is farm, thin or skip: a farm
+whose gas alone exceeds its capital, or whose launch is under $1M implied, is a
+skip; gas over half the capital, or a launch under $10M implied, is thin. On
+this snapshot the verdicts run farm 54 / thin 173 / skip 62. The per-dollar and
+per-hour figures are screening ratios — the launch's scale against what farming
+it costs — never promised returns: no airdrop yield is invented anywhere.
 
 ## Run it
 

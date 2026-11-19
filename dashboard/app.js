@@ -1,9 +1,13 @@
 // Token Radar dashboard: renders window.RADAR (written by main.ts) with no network.
-// The value model is radar-4: a log-log comps curve fitted on the snapshot's trading protocols,
-// validated out of sample (leave-one-out + a walk-forward split), with rank ranges from 200
-// bootstrap refits and every farm plan netted to the dollar. Query params for screenshots:
-// ?shot=detail&slug=<slug> opens a detail view, ?shot=filtered&category=<name> applies a
-// category filter, ?shot=validation scrolls to the model and validation panel.
+// The value model is radar-5: three curve forms compared by two blind tests (leave-one-out and a
+// seeded random-half split), the winner pricing the board; rank ranges from 200 bootstrap refits;
+// every row naming its nearest traded comparable and its eight nearest size neighbours (reported
+// as comparables — five neighbour-blend designs failed the split test, so the blend weight is 0);
+// every farm plan netted to the dollar with a time budget and implied value per $1 and per hour;
+// and an audit listing every pre-token protocol the board does not rank, with its reason.
+// Query params for screenshots: ?shot=detail&slug=<slug> opens a detail view,
+// ?shot=filtered&category=<name> applies a category filter, ?shot=validation scrolls to the model
+// and validation panel, ?shot=audit scrolls to the audit.
 (function () {
   'use strict';
   var R = window.RADAR;
@@ -30,6 +34,13 @@
     return '<span class="' + cls + '">' + s + '</span>';
   }
   function factor(n) { return '×' + Math.exp(n).toFixed(1); }
+  // Implied value per $1 of farm cost, as a multiple: 81005 becomes ×81K.
+  function perDollar(n) {
+    if (n === null || n === undefined) return '—';
+    if (n >= 1e6) return '×' + (n / 1e6).toFixed(1) + 'M';
+    if (n >= 1e3) return '×' + Math.round(n / 1e3) + 'K';
+    return '×' + n;
+  }
   function $(id) { return document.getElementById(id); }
 
   // Header + stats.
@@ -51,9 +62,10 @@
   $('kpi-loo-sub').textContent = 'median |log error|, ' + v.loo_n + ' comps held out one by one (flat median: ' +
     v.loo_median_abs_log_error_baseline.toFixed(2) + ')';
   $('kpi-refits').textContent = v.refits;
+  var chosenForm = v.forms.find(function (f) { return f.chosen; }) || v.forms[0];
   $('kpi-slope').textContent = f.slope.toFixed(2);
-  $('kpi-slope-sub').textContent = 'log(mcap) = ' + f.intercept.toFixed(2) + ' + ' + f.slope.toFixed(2) +
-    '·log(TVL), R² ' + f.r2.toFixed(2) + ', ' + f.comps + ' comps';
+  $('kpi-slope-sub').textContent = chosenForm.label + ' · log(mcap) = ' + f.intercept.toFixed(2) + ' + ' +
+    f.slope.toFixed(2) + '·log(TVL), R² ' + f.r2.toFixed(2) + ', ' + f.comps + ' comps';
 
   // Model transparency: the fitted curve, its validation, and the category effects it derived.
   $('model-text').textContent =
@@ -63,7 +75,13 @@
     ' says bigger protocols trade at lower multiples, so the curve values size sub-linearly, and each ' +
     'category adds its own shrunk effect (the median residual of its trading peers, pulled toward zero ' +
     'where peers are thin, capped at ' + f.residual_cap.toFixed(2) + '). A category with no trading peer ' +
-    'gets no effect at all, never an invented number.';
+    'gets no effect at all, never an invented number. The curve form itself was picked, not assumed: ' +
+    'three forms were compared by two blind tests (leave-one-out and a seeded random-half split), and ' +
+    'the ' + chosenForm.label + ' won on both, so the board is priced by it. Every row also names its ' +
+    'nearest traded comparable and its eight nearest size neighbours — but as comparables only: five ' +
+    'neighbour-blend designs were tested as a pricing input and all failed the split test (the best ' +
+    'LOO gain reversed out of sample, and thin-category rows got worse), so the blend weight is 0 and ' +
+    'the curve alone prices the board.';
   $('valid-rows').innerHTML =
     '<dt>Leave-one-out, ' + v.loo_n + ' comps</dt><dd>median |log error| ' +
     v.loo_median_abs_log_error.toFixed(2) + ' (' + factor(v.loo_median_abs_log_error) +
@@ -71,6 +89,10 @@
     '<dt>Same test, flat-median model</dt><dd>median |log error| ' +
     v.loo_median_abs_log_error_baseline.toFixed(2) + ' (' + factor(v.loo_median_abs_log_error_baseline) +
     '), ' + Math.round(v.loo_hit_within_2x_baseline * 100) + '% within 2× — the fitted curve beats it</dd>' +
+    '<dt>Random-half split, seed ' + v.split_seed + '</dt><dd>fit on ' + v.split_train_n + ' comps, ' +
+    'tested on ' + v.split_test_n + ' it never saw: median |log error| ' +
+    (v.split_median_abs_log_error === null ? '—' : v.split_median_abs_log_error.toFixed(2)) +
+    ', ' + (v.split_hit_within_2x === null ? '—' : Math.round(v.split_hit_within_2x * 100) + '% within 2×') + '</dd>' +
     '<dt>Walk-forward split</dt><dd>fit on ' + v.walkforward_train_n + ' comps listed up to ' +
     (v.walkforward_cutoff || '—') + ', tested on ' + v.walkforward_test_n + ' newer ones: median |log error| ' +
     (v.walkforward_median_abs_log_error === null ? '—' : v.walkforward_median_abs_log_error.toFixed(2)) +
@@ -94,6 +116,36 @@
     return '<tr><td>' + esc(r.category) + '</td><td class="num">×' + r.factor.toFixed(2) +
       '</td><td class="num">' + (r.effect >= 0 ? '+' : '') + r.effect.toFixed(2) +
       '</td><td class="num">' + r.comps + '</td></tr>';
+  }).join('');
+
+  // Curve-form comparison: the blind tests that picked the board's form.
+  $('forms-text').textContent =
+    'Three curve forms, each scored by leave-one-out over all ' + v.loo_n + ' comps and by a seeded ' +
+    'random-half split (fit half the comps, test the other half). The combined score is the two ' +
+    'medians added; the lowest wins and prices the board. The ' + chosenForm.label + ' won, so the ' +
+    'board is priced by it.';
+  $('form-rows').innerHTML = v.forms.map(function (f) {
+    return '<tr' + (f.chosen ? ' class="chosen"' : '') + '><td>' + esc(f.label) +
+      (f.chosen ? ' <span class="badge">CHOSEN</span>' : '') + '</td>' +
+      '<td class="num">' + f.loo_median_abs_log_error.toFixed(2) + '</td>' +
+      '<td class="num">' + (f.split_median_abs_log_error === null ? '—' : f.split_median_abs_log_error.toFixed(2)) + '</td>' +
+      '<td class="num"><b>' + f.combined.toFixed(2) + '</b></td>' +
+      '<td class="num">' + Math.round(f.loo_hit_within_2x * 100) + '%</td></tr>';
+  }).join('');
+
+  // Leave-one-out by category: where the curve is sharp and where it is blunt.
+  var catloo = v.loo_by_category.slice().sort(function (a, b) { return a.median_abs_log_error - b.median_abs_log_error; });
+  var bestCat = catloo[0];
+  var worstCat = catloo[catloo.length - 1];
+  $('catloo-text').textContent =
+    'The same leave-one-out test, grouped by category, for the ' + catloo.length + ' categories with at ' +
+    'least five trading peers, best first. The curve predicts ' + bestCat.category + ' best (median ' +
+    '|log error| ' + bestCat.median_abs_log_error.toFixed(2) + ') and ' + worstCat.category + ' worst (' +
+    worstCat.median_abs_log_error.toFixed(2) + ') — a row\'s category says how far to trust its value.';
+  $('catloo-rows').innerHTML = catloo.map(function (r) {
+    return '<tr><td>' + esc(r.category) + '</td><td class="num">' + r.n + '</td>' +
+      '<td class="num">' + r.median_abs_log_error.toFixed(2) + '</td>' +
+      '<td class="num">' + Math.round(r.hit_within_2x * 100) + '%</td></tr>';
   }).join('');
 
   // Movers: the board's fastest growers by seven-day change.
@@ -124,6 +176,21 @@
       '<td class="num">' + pct(r.change_7d) + '</td></tr>';
   }).join('');
 
+  // Audit: every pre-token protocol the board does not rank, with the reason it is excluded.
+  $('audit-text').textContent =
+    'The snapshot holds ' + c.total + ' protocols: ' + c.ranked + ' ranked on the board, ' + c.live +
+    ' already trading (the live set above), and ' + c.excluded + ' pre-token protocols the board does ' +
+    'not rank — every one of them listed here with its reason, so all ' + (c.ranked + c.excluded) +
+    ' pre-token protocols are accounted for. Exchanges are excluded because an exchange token is not ' +
+    'a protocol launch to farm; versioned pools are excluded because they are a release of another ' +
+    'protocol, not a protocol of their own.';
+  $('audit-rows').innerHTML = R.audit.map(function (r) {
+    return '<tr><td><span class="name">' + esc(r.name) + '</span></td>' +
+      '<td class="cat">' + esc(r.category || '—') + '</td>' +
+      '<td class="num">' + money(r.tvl_usd) + '</td>' +
+      '<td>' + esc(r.reason) + '</td></tr>';
+  }).join('');
+
   // Filter options.
   var cats = Array.from(new Set(R.rows.map(function (r) { return r.category || '(uncategorised)'; }))).sort();
   var chains = Array.from(new Set(R.rows.flatMap(function (r) { return r.chains; }))).sort();
@@ -151,6 +218,7 @@
     var by = {
       rank: function (a, b) { return a.rank - b.rank; },
       implied: function (a, b) { return b.implied_value_usd - a.implied_value_usd; },
+      ipd: function (a, b) { return b.farm.implied_per_dollar - a.farm.implied_per_dollar; },
       tvl: function (a, b) { return b.tvl_usd - a.tvl_usd; },
       growth: function (a, b) { return (b.change_7d || 0) - (a.change_7d || 0); },
       age: function (a, b) { return (b.age_days || 0) - (a.age_days || 0); },
@@ -171,6 +239,7 @@
         '<td class="num">' + money(r.tvl_usd) + '</td>' +
         '<td class="num">' + pct(r.change_7d) + '</td>' +
         '<td class="num"><b>' + money(r.implied_value_usd) + '</b></td>' +
+        '<td class="num">' + perDollar(r.farm.implied_per_dollar) + '</td>' +
         '<td>' + verdictBadge(r.farm) + '</td></tr>';
     }).join('');
     $('count').textContent = rows.length + ' of ' + R.board_size + ' protocols shown.';
@@ -178,16 +247,16 @@
   }
 
   function verdictWhy(r) {
-    var gasShare = r.farm.gas_usd / r.farm.capital_usd;
+    var gasShare = r.farm.gas_share;
     if (r.farm.verdict === 'skip') {
-      if (r.implied_value_usd < R.model.verdict_skip_implied_usd) return 'launch under $1M implied';
-      return 'gas is ' + Math.round(gasShare * 100) + '% of the capital';
+      if (r.implied_value_usd < R.model.verdict_skip_implied_usd) return 'Launch under $1M implied';
+      return 'Gas alone is ' + Math.round(gasShare * 100) + '% of the capital — more than the deposit itself';
     }
     if (r.farm.verdict === 'thin') {
-      if (r.implied_value_usd < R.model.verdict_thin_implied_usd) return 'launch under $10M implied';
-      return 'gas is ' + Math.round(gasShare * 100) + '% of the capital';
+      if (r.implied_value_usd < R.model.verdict_thin_implied_usd) return 'Launch under $10M implied';
+      return 'Gas is ' + Math.round(gasShare * 100) + '% of the capital';
     }
-    return 'net cost small against a launch over $10M implied';
+    return 'Net cost small against a launch over $10M implied';
   }
 
   function renderDetail() {
@@ -203,6 +272,20 @@
       r.chains.map(esc).join(', ') + ' · ' + (r.watchlist ? 'on the watchlist' : 'early find') + '</p>' +
       '<p class="big">' + money(r.implied_value_usd) + '</p>' +
       '<p class="lbl">Implied value</p>' +
+      '<h3>Farm plan — ' + verdictBadge(r.farm) + '</h3>' +
+      '<p class="net">Net cost ' + dollars(r.farm.net_cost_usd) + ': ' + dollars(r.farm.capital_usd) +
+      ' capital + ' + dollars(r.farm.gas_usd) + ' gas (' + Math.round(r.farm.gas_share * 100) +
+      '% of the capital) over ' + r.farm.transactions + ' transactions, ' + r.farm.hold_days +
+      ' days, about ' + r.farm.time_hours + ' hours of work. Implied value per $1 of farm cost: ' +
+      perDollar(r.farm.implied_per_dollar) + '; per hour: ' + money(r.farm.implied_per_hour) + '. ' +
+      verdictWhy(r) + '.</p>' +
+      '<p class="note">Implied-per-dollar and implied-per-hour are screening ratios — the launch\'s ' +
+      'scale against what farming it costs — not returns: a farmer captures only a small share of any ' +
+      'launch, and no airdrop is promised.</p>' +
+      '<ol>' +
+      r.farm_steps.map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') +
+      '</ol>' +
+      '<h3>How the value was figured</h3>' +
       '<dl>' +
       '<dt>TVL</dt><dd>' + money(r.tvl_usd) + '</dd>' +
       '<dt>7d change</dt><dd>' + pct(r.change_7d) + '</dd>' +
@@ -212,14 +295,12 @@
       '<dt>Growth ×</dt><dd>' + r.growth_multiplier.toFixed(2) + '</dd>' +
       '<dt>Maturity ×</dt><dd>' + r.maturity_multiplier.toFixed(2) + '</dd>' +
       '<dt>Chain breadth ×</dt><dd>' + r.chain_multiplier.toFixed(2) + '</dd>' +
-      '</dl>' +
-      '<h3>Farm plan — ' + verdictBadge(r.farm) + '</h3>' +
-      '<p class="net">Net cost ' + dollars(r.farm.net_cost_usd) + ': ' + dollars(r.farm.capital_usd) +
-      ' capital + ' + dollars(r.farm.gas_usd) + ' gas over ' + r.farm.transactions + ' transactions, ' +
-      r.farm.hold_days + ' days. ' + verdictWhy(r) + '.</p>' +
-      '<ol>' +
-      r.farm_steps.map(function (s) { return '<li>' + esc(s) + '</li>'; }).join('') +
-      '</ol>';
+      '<dt>Nearest traded comparable</dt><dd>' + (r.farm.kin ? esc(r.farm.kin.name) +
+      ' (×' + r.farm.kin.ratio.toFixed(2) + ' of TVL)' : 'none') + '</dd>' +
+      '<dt>Size neighbours</dt><dd>' + r.neighbours.count + ' nearest traded comps, ' +
+      r.neighbours.same_category + ' same category, median ratio ×' + r.neighbours.median_ratio.toFixed(2) +
+      ' (comparables only)</dd>' +
+      '</dl>';
   }
 
   function openSlug(slug) {
@@ -262,6 +343,10 @@
   } else if (shot === 'validation') {
     render();
     document.getElementById('model').scrollIntoView();
+    return;
+  } else if (shot === 'audit') {
+    render();
+    document.getElementById('audit').scrollIntoView();
     return;
   }
   render();

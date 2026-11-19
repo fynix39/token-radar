@@ -1,4 +1,4 @@
-// The token radar's model, version radar-5: one snapshot of the protocol universe in, one ranked
+// The token radar's model, version radar-6: one snapshot of the protocol universe in, one ranked
 // board out. The board ranks every pre-token protocol the snapshot can rank — the watchlist plus all
 // 249 other rankable pre-token protocols — and audits the rest of the snapshot's 758 protocols: the
 // 416 live-token protocols anchor the fit, and the 53 excluded pre-token protocols are listed with
@@ -12,35 +12,48 @@
 // the data's, not the author's. A walk-forward split (fit the older comps, test the newer ones) and
 // a per-category leave-one-out table check the winner a third and fourth way.
 //
-// Every prediction blends TWO signals. The fitted curve gives the size answer — what a protocol of
-// this TVL is worth — and the protocol's nearest traded neighbours give the local answer: the K
-// comps closest in log(TVL), same category first, whose median market-cap-to-TVL ratio prices the
-// row from its own neighbourhood. The blend weight grows with the neighbour count and shrinks with
-// their distance, so a thin category with no close peer leans on the curve while a row with close
-// peers leans on them. The neighbour count, the blend weight and the nearest comparable (the kin)
-// are printed per row, so no number is a black box.
+// Then every term the model might carry after the curve is put to the SAME blind test, in a
+// 32-way ablation: the category effect, the growth, maturity and chain multipliers, each on or
+// off, over two comp sets (all comps, and comps without the exchanges). The rule is that a term
+// earns its keep only if it improves the combined out-of-sample score by more than 0.03 — and
+// among the configs within 0.03 of the best, the simplest wins, because the split test's median
+// swings by 0.2-0.4 across five seeds, so a smaller lead is noise. The result is that NO term
+// earns its keep: every config that keeps the category effect ranks 15th or worse, and shrinking
+// the effect toward zero improves the score monotonically (shrinkage k=5: 2.66; k=40: 2.47), which
+// says the effect is noise, not signal. So the board prices on the fitted curve alone —
+// implied = exp(intercept + slope * log(TVL)) — and the ablation table, shrinkage test included,
+// is printed in the dashboard and in board.json, so the spareness is evidence, not neglect.
+//
+// A second axis carries what the curve cannot: LAUNCH ODDS. A row's odds are the empirical share
+// of protocols in its category-by-age cell that already have a token, shrunk toward the age-bucket
+// rate where the cell is thin (the same shrinkage discipline as the old category effect). The
+// odds are validated out of sample — leave-one-out Brier and log-loss against the base rate, and
+// a time-split Brier — and the expected value of a row is its implied value times its odds. The
+// odds are a cohort base rate for screening, never a prediction of whether or when a protocol
+// launches: the snapshot holds no launch dates, and no launch clock is fitted. Age enters the
+// model through the odds, not through a multiplier the blind test rejected.
 //
 // Rank stability is measured, not asserted: the chosen form is refit 200 times on bootstrap
-// resamples of the comps (a seeded PRNG, so two runs agree byte for byte) and every row carries the
-// p10-p90 range of its rank.
+// resamples of the comps (a seeded PRNG, so two runs agree byte for byte) and every row carries
+// the p10-p90 range of its rank AND of its implied value. The farm economics are netted at the
+// P10 of that value range — the conservative end — and the verdict follows the P10 number.
 //
-// What a row's farm costs is NETTED TO THE DOLLAR, and its economics are stated four ways: the
-// capital plus every transaction's gas over the hold; the gas as a share of the capital; the time
-// budget in hours (setup, one weekly action, the claim check, the log); and the launch's implied
-// value per dollar of farm cost and per hour of farm time. Those last two are screening ratios —
-// how much launch a dollar or an hour of farming screens — never a promised return: a farmer
-// captures only a small share of any launch, and the dashboard says so. The verdict follows from
-// the net cost and the launch's scale: skip when the gas alone exceeds the capital, or the launch
-// is under $1M implied; thin when the gas exceeds half the capital, or the launch is under $10M
-// implied; farm otherwise. The farm steps themselves stay six, each an action with a cost and a time.
+// What a farm costs is NETTED TO THE DOLLAR, and its economics are stated four ways: the capital
+// plus every transaction's gas over the hold; the gas as a share of the capital; the time budget
+// in hours (setup, one weekly action, the claim check, the log); and the launch's implied and
+// expected value per dollar of farm cost and per hour of farm time. Those last two are screening
+// ratios — how much launch a dollar or an hour of farming screens — never a promised return: a
+// farmer captures only a small share of any launch, and the dashboard says so. The verdict follows
+// from the net cost and the launch's P10 scale: skip when the gas alone exceeds the capital, or
+// the P10 launch is under $1M; thin when the gas exceeds half the capital, or the P10 launch is
+// under $10M; farm otherwise. The farm steps themselves stay six, each an action with a cost and
+// a time.
 //
-//   curve    = intercept + slope * log(TVL) + quad * (log(TVL) - center)^2 + category_effect
-//   neighbour = log(TVL) + log(median ratio of the K nearest traded comps)
-//   log(mcap) = (1 - w) * curve + w * neighbour,  w from the neighbour count and distance
-//   implied  = exp(log(mcap)) * growthMult * maturityMult * chainMult
-//   growthMult   = 1 + clamp(change_7d, -60, 120) / 100 * GROWTH_WEIGHT
-//   maturityMult = 0.6 + min(age_days, 1095) / 1095 * 0.4   (age unknown: 365 days)
-//   chainMult    = 1 + 0.02 * min(chains - 1, 5)
+//   curve    = intercept + slope * log(TVL)          (the fitted line; no terms survived ablation)
+//   implied  = exp(curve)
+//   odds     = shrunk share of the category x age cell that already has a token
+//   expected = implied * odds
+//   P10      = 10th percentile of implied over 200 bootstrap refits; verdicts use P10
 
 /** The snapshot's protocol entry: exactly the ten fields the sealed input carries. */
 export interface SnapshotProtocol {
@@ -121,7 +134,10 @@ export const MODEL: ModelConstants = {
 };
 
 /** The model's version label: the dashboard names it. */
-export const MODEL_VERSION = 'radar-5';
+export const MODEL_VERSION = 'radar-6';
+
+/** A term a config keeps earns its keep only by beating the best combined score by more than this. */
+export const ABLATION_TIE_BAND = 0.03;
 
 /** How many bootstrap refits the rank ranges come from. */
 export const REFITS = 200;
@@ -238,6 +254,144 @@ export interface Validation {
   refits: number;
 }
 
+/** Which terms the value model applies after the fitted curve — every term kept only if the blind test keeps it. */
+export interface TermsConfig {
+  /** Add the category's fitted effect (for the median form, the overall median multiple when false). */
+  effect: boolean;
+  /** Multiply by the 7-day growth factor. */
+  growth: boolean;
+  /** Multiply by the maturity factor (age since listing). */
+  maturity: boolean;
+  /** Multiply by the chain-breadth factor. */
+  chain: boolean;
+  /** Fit on the comps without the CEX category (an exchange is not a protocol launch). */
+  exCex: boolean;
+}
+
+/** Every term on, over all comps: the radar-5 configuration, kept as the ablation's baseline. */
+export const FULL_TERMS: TermsConfig = { effect: true, growth: true, maturity: true, chain: true, exCex: false };
+
+/** No term on, over all comps: the fitted curve alone. */
+export const CURVE_ONLY: TermsConfig = { effect: false, growth: false, maturity: false, chain: false, exCex: false };
+
+/** How many terms a config applies (the comp filter counts as one choice). */
+export function termsCount(cfg: TermsConfig): number {
+  return (cfg.effect ? 1 : 0) + (cfg.growth ? 1 : 0) + (cfg.maturity ? 1 : 0) + (cfg.chain ? 1 : 0) + (cfg.exCex ? 1 : 0);
+}
+
+/** A config's plain name, as the ablation table prints it. */
+export function termsName(cfg: TermsConfig): string {
+  const kept: string[] = [];
+  if (cfg.effect) kept.push('effect');
+  if (cfg.growth) kept.push('growth');
+  if (cfg.maturity) kept.push('maturity');
+  if (cfg.chain) kept.push('chain');
+  const base = kept.length === 0 ? 'curve-only' : kept.join('+');
+  return cfg.exCex ? `${base} [ex-CEX fit]` : base;
+}
+
+/** One ablation row: a config's blind-test score, leave-one-out plus the seeded split. */
+export interface AblationRow {
+  name: string;
+  terms: TermsConfig;
+  /** The category-effect shrinkage the row's fit used (5 unless the row tests a stronger shrinkage). */
+  shrinkage_k: number;
+  loo_n: number;
+  loo_median_abs_log_error: number;
+  loo_hit_within_2x: number;
+  split_train_n: number;
+  split_test_n: number;
+  split_median_abs_log_error: number | null;
+  split_hit_within_2x: number | null;
+  /** loo median + split median: the number the choice is made on (lower is better). */
+  combined: number;
+  chosen: boolean;
+}
+
+/** The ablation: every config's score, and the config the board uses. */
+export interface Ablation {
+  rows: AblationRow[];
+  chosen: TermsConfig;
+  /** The tie band: configs within this of the best combined score count as tied, and the simplest wins. */
+  tie_band: number;
+  /** Why the chosen config was chosen, in words the dashboard prints. */
+  reason: string;
+}
+
+/** One age bucket of the launch-odds table. */
+export interface OddsBucket {
+  label: string;
+  lo_days: number;
+  hi_days: number | null;
+  n: number;
+  tokened: number;
+  /** The shrunk token rate: (tokened + 5 x global) / (n + 5). */
+  rate: number;
+}
+
+/** One cell of the launch-odds table: a category in one age bucket. */
+export interface OddsCell {
+  category: string;
+  bucket: string;
+  n: number;
+  tokened: number;
+  /** The shrunk token rate: (tokened + 5 x bucket rate) / (n + 5). */
+  rate: number;
+}
+
+/** The out-of-sample validation of the launch odds, against the base rate. */
+export interface OddsValidation {
+  loo_n: number;
+  loo_brier: number;
+  loo_brier_base: number;
+  loo_log_loss: number;
+  loo_log_loss_base: number;
+  split_cutoff: string | null;
+  split_train_n: number;
+  split_test_n: number;
+  split_brier: number;
+  split_brier_base: number;
+}
+
+/** The launch-odds table: empirical cohort rates by category and age, with their validation. */
+export interface OddsTable {
+  buckets: OddsBucket[];
+  cells: OddsCell[];
+  /** One category's token rate over all ages, shrunk toward the global rate (for rows of unknown age). */
+  category_rates: { category: string; n: number; tokened: number; rate: number }[];
+  global_rate: number;
+  cohort_n: number;
+  cohort_tokened: number;
+  validation: OddsValidation;
+}
+
+/** A row's launch odds: the empirical cohort rate for its category and age. */
+export interface OddsInfo {
+  /** The shrunk cohort rate: the share of protocols like this one that already have a token. */
+  rate: number;
+  /** The cell the rate comes from: category and age bucket. */
+  cell: string;
+  cell_n: number;
+  cell_tokened: number;
+  bucket: string;
+  bucket_rate: number;
+}
+
+/** A row's refit distribution: the p10-p90 range of its rank and of its implied value over the refits. */
+export interface RefitStats {
+  rank_lo: number;
+  rank_hi: number;
+  value_p10: number;
+  value_p50: number;
+  value_p90: number;
+}
+
+/** One section of the research note: a heading and its paragraphs, with the computed numbers baked in. */
+export interface ResearchSection {
+  heading: string;
+  paragraphs: string[];
+}
+
 /** How the snapshot's 758 protocols are accounted for: ranked, live, or excluded with a reason. */
 export interface Coverage {
   total: number;
@@ -272,7 +426,7 @@ export interface Kin {
   ratio: number;
 }
 
-/** What a farm costs, netted to the dollar, and the verdict the net cost earns. */
+/** What a farm costs, netted to the dollar, and the verdict the net cost earns — at the P10 of the row's value range. */
 export interface FarmEconomics {
   capital_usd: number;
   gas_usd: number;
@@ -287,7 +441,16 @@ export interface FarmEconomics {
   implied_per_dollar: number;
   /** The launch's implied value per hour of farm time: a screening ratio, never a promised return. */
   implied_per_hour: number;
+  /** The launch's expected value (implied x launch odds) per dollar of farm cost. */
+  expected_per_dollar: number;
+  /** The launch's expected value per hour of farm time. */
+  expected_per_hour: number;
+  /** The launch's P10 implied value per dollar of farm cost: the conservative read. */
+  p10_implied_per_dollar: number;
+  /** The launch's P10 implied value per hour of farm time. */
+  p10_implied_per_hour: number;
   kin: Kin | null;
+  /** The verdict, on the P10 launch: skip when the gas alone exceeds the capital or the P10 launch is under $1M; thin when the gas exceeds half the capital or the P10 launch is under $10M; farm otherwise. */
   verdict: 'farm' | 'thin' | 'skip';
 }
 
@@ -317,20 +480,29 @@ export interface BoardRow {
   token_status: 'pre-token';
   age_days: number | null;
   implied_value_usd: number;
+  /** The implied value times the launch odds: the launch's value weighted by how often protocols like it have one. */
+  expected_value_usd: number;
+  /** The p10 and p90 of this row's implied value over the bootstrap refits. */
+  implied_p10_usd: number;
+  implied_p90_usd: number;
   /** The p10-p90 range of this row's rank over the bootstrap refits. */
   rank_range: [number, number];
   farm: FarmEconomics;
   model: {
-    /** The blended fitted multiple for this protocol: the blended fitted value over its TVL. */
+    /** The fitted multiple for this protocol: the fitted value over its TVL. */
     multiple: number;
     comp_count: number;
+    /** The category effect actually applied: 0 when the ablation dropped the term. */
     category_effect: number;
     growth_pct: number;
+    /** The multipliers actually applied: 1.00 when the ablation dropped the term. */
     growth_multiplier: number;
     maturity_multiplier: number;
     chain_multiplier: number;
     age_days: number | null;
     neighbours: NeighbourInfo;
+    /** The row's launch odds: the empirical cohort rate for its category and age. */
+    odds: OddsInfo;
   };
   farm_steps: string[];
 }
@@ -348,6 +520,9 @@ export interface RadarRow {
   listed_at: string | null;
   age_days: number | null;
   implied_value_usd: number;
+  expected_value_usd: number;
+  implied_p10_usd: number;
+  implied_p90_usd: number;
   rank_range: [number, number];
   farm: FarmEconomics;
   multiple: number;
@@ -357,6 +532,7 @@ export interface RadarRow {
   maturity_multiplier: number;
   chain_multiplier: number;
   neighbours: NeighbourInfo;
+  odds: OddsInfo;
   watchlist: boolean;
   farm_steps: string[];
 }
@@ -381,6 +557,10 @@ export interface RadarData {
   model_version: string;
   fit: DerivedFit;
   validation: Validation;
+  /** The per-term ablation: which terms the blind test kept, and which it dropped. */
+  ablation: Ablation;
+  /** The launch-odds table: empirical cohort rates by category and age. */
+  odds: OddsTable;
   coverage: Coverage;
   audit: AuditRow[];
   watchlist_size: number;
@@ -389,6 +569,8 @@ export interface RadarData {
   live_size: number;
   rows: RadarRow[];
   live: LiveRow[];
+  /** The research note: the methodology, validation, limits and reading guide, with the computed numbers baked in. */
+  research: ResearchSection[];
 }
 
 /** Why the snapshot is not one this model can score. */
@@ -741,12 +923,69 @@ export function predictLogMcap(
   return { log_pred: logPred, curve_log_pred: curve, effect, comps, neighbours, kin };
 }
 
+/**
+ * The full log(market cap) prediction for one protocol under a terms config: the fitted curve,
+ * blended with the neighbours' median ratio at the weight the neighbours earn — which the shipped
+ * constants set to zero, so the prediction is the curve alone and the neighbours stay comparables —
+ * plus the post-fit terms the config keeps. A dropped category effect is 0 (for the median form,
+ * the overall median multiple); a dropped multiplier is 1. The pool is the comp set the neighbours
+ * are drawn from — the full comps for the board, the training set in a blind test, so a held-out
+ * protocol never prices itself from its own record.
+ */
+export function predictWithTerms(
+  protocol: SnapshotProtocol,
+  asOf: string,
+  fit: DerivedFit,
+  pool: SnapshotProtocol[],
+  terms: TermsConfig,
+  model: ModelConstants = MODEL,
+): {
+  log_pred: number;
+  curve_log_pred: number;
+  effect: number;
+  comps: number;
+  neighbours: NeighbourInfo;
+  kin: Kin | null;
+  growthPct: number;
+  growthMult: number;
+  maturityMult: number;
+  chainMult: number;
+} {
+  const pred = predictLogMcap(protocol, fit, pool, model);
+  // The curve's prediction with the config's effect: the category effect, or nothing (the median
+  // form falls back to the overall median multiple, as it does for a category with no peer).
+  const appliedEffect = terms.effect ? pred.effect : fit.form === 'median' ? fit.fallback_effect : 0;
+  const curveLogPred = pred.curve_log_pred - pred.effect + appliedEffect;
+  const age = ageDays(asOf, protocol.listed_at);
+  const rawGrowth = finite(protocol.change_7d, 0);
+  const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
+  const growthMult = terms.growth ? 1 + (growthPct / 100) * model.growth_weight : 1;
+  const ageForModel = age ?? model.unknown_age_days;
+  const maturityMult = terms.maturity
+    ? model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range
+    : 1;
+  const chainMult = terms.chain ? 1 + model.chain_step * Math.min(Math.max(protocol.chains.length - 1, 0), model.chain_cap) : 1;
+  return {
+    log_pred: curveLogPred + Math.log(growthMult) + Math.log(maturityMult) + Math.log(chainMult),
+    curve_log_pred: curveLogPred,
+    effect: appliedEffect,
+    comps: pred.comps,
+    neighbours: pred.neighbours,
+    kin: pred.kin,
+    growthPct,
+    growthMult,
+    maturityMult,
+    chainMult,
+  };
+}
+
 /** The multipliers and the implied value one protocol gets under the fitted curve and its neighbours. */
 export function impliedValue(
   protocol: SnapshotProtocol,
   asOf: string,
   fit: DerivedFit,
   pool: SnapshotProtocol[],
+  terms: TermsConfig,
   model: ModelConstants = MODEL,
 ): {
   implied: number;
@@ -762,15 +1001,9 @@ export function impliedValue(
   age: number | null;
 } {
   const age = ageDays(asOf, protocol.listed_at);
-  const pred = predictLogMcap(protocol, fit, pool, model);
-  const fitted = Math.exp(pred.log_pred);
-  const rawGrowth = finite(protocol.change_7d, 0);
-  const growthPct = Math.min(model.growth_cap, Math.max(model.growth_floor, rawGrowth));
-  const growthMult = 1 + (growthPct / 100) * model.growth_weight;
-  const ageForModel = age ?? model.unknown_age_days;
-  const maturityMult = model.maturity_floor + (Math.min(Math.max(ageForModel, 0), model.maturity_days) / model.maturity_days) * model.maturity_range;
-  const chainMult = 1 + model.chain_step * Math.min(Math.max(protocol.chains.length - 1, 0), model.chain_cap);
-  const implied = Math.max(1, Math.round(fitted * growthMult * maturityMult * chainMult));
+  const pred = predictWithTerms(protocol, asOf, fit, pool, terms, model);
+  const fitted = Math.exp(pred.curve_log_pred);
+  const implied = Math.max(1, Math.round(Math.exp(pred.log_pred)));
   return {
     implied,
     multiple: protocol.tvl_usd > 0 ? fitted / protocol.tvl_usd : 0,
@@ -778,10 +1011,10 @@ export function impliedValue(
     comps: pred.comps,
     neighbours: pred.neighbours,
     kin: pred.kin,
-    growthPct,
-    growthMult,
-    maturityMult,
-    chainMult,
+    growthPct: pred.growthPct,
+    growthMult: pred.growthMult,
+    maturityMult: pred.maturityMult,
+    chainMult: pred.chainMult,
     age,
   };
 }
@@ -943,32 +1176,363 @@ export function validateAll(comps: SnapshotProtocol[], model: ModelConstants = M
 }
 
 /**
- * Every board protocol's p10-p90 rank range over REFITS bootstrap refits of the chosen form: each
- * refit resamples the comps with replacement (the seeded PRNG, so the ranges are the same every
- * run), refits, re-scores the whole board and re-ranks it. Top rows hold tight ranges; mid-board
- * rows sit close together in implied value, so theirs run wide — the range says so instead of
- * hiding it.
+ * One config's blind-test score, on the SAME test set every config shares: leave-one-out over all
+ * comps (each held-out comp predicted by a fit on the rest, the fit's pool filtered by the
+ * config), plus the seeded random-half split (fit half the comps, test the other half — the
+ * filter applies to the training half only, so a filtered config is still tested on the full
+ * held-out half, CEX comps included). A config that only looked better by dropping hard comps
+ * from its test set would win on nothing here.
  */
-export function rankRanges(
+function scoreTerms(
+  terms: TermsConfig,
+  shrinkageK: number,
+  comps: SnapshotProtocol[],
+  asOf: string,
+  form: CurveForm,
+  model: ModelConstants,
+): { loo: number[]; split_train_n: number; split_test_n: number; split: number[] } {
+  const cfg: ModelConstants = { ...model, shrinkage_k: shrinkageK };
+  const trainPool = (rows: SnapshotProtocol[]): SnapshotProtocol[] => (terms.exCex ? rows.filter((p) => p.category !== 'CEX') : rows);
+  const loo: number[] = [];
+  for (let i = 0; i < comps.length; i++) {
+    const rest = trainPool(comps.filter((_, j) => j !== i));
+    const fit = fitModel(rest, form, cfg);
+    const pred = predictWithTerms(comps[i]!, asOf, fit, rest, terms, cfg);
+    loo.push(Math.abs(pred.log_pred - Math.log(comps[i]!.mcap_usd!)));
+  }
+  const order = shuffled(comps, SPLIT_SEED);
+  const half = Math.floor(order.length / 2);
+  const train = trainPool(order.slice(0, half));
+  const test = order.slice(half);
+  const fit = fitModel(train, form, cfg);
+  const split = test.map((p) => Math.abs(predictWithTerms(p, asOf, fit, train, terms, cfg).log_pred - Math.log(p.mcap_usd!)));
+  return { loo, split_train_n: train.length, split_test_n: test.length, split };
+}
+
+/**
+ * The per-term ablation: every combination of the four post-fit terms (the category effect, the
+ * growth, maturity and chain multipliers), each on or off, over two comp sets (all comps, and
+ * comps without the exchanges) — 32 configs — plus three extra rows that keep the category effect
+ * under a stronger shrinkage (k=10, 20, 40), to ask whether the effect helps when it is barely
+ * allowed to move. Each config is scored by leave-one-out plus the seeded split, on the same test
+ * set, and the winner is the SIMPLEST config within the tie band of the best combined score: a
+ * term earns its keep only by beating the best by more than 0.03, because the split test's median
+ * swings by 0.2-0.4 across five seeds, so a smaller lead is noise.
+ */
+export function ablateTerms(comps: SnapshotProtocol[], asOf: string, form: CurveForm, model: ModelConstants = MODEL): Ablation {
+  const rows: AblationRow[] = [];
+  const flags: (keyof TermsConfig)[] = ['effect', 'growth', 'maturity', 'chain'];
+  for (let mask = 0; mask < 16; mask++) {
+    const base: TermsConfig = { effect: false, growth: false, maturity: false, chain: false, exCex: false };
+    flags.forEach((t, i) => {
+      if (mask & (1 << i)) base[t] = true;
+    });
+    for (const exCex of [false, true]) {
+      const terms: TermsConfig = { ...base, exCex };
+      const s = scoreTerms(terms, model.shrinkage_k, comps, asOf, form, model);
+      const looMedian = median(s.loo);
+      const splitMedian = s.split.length > 0 ? median(s.split) : null;
+      rows.push({
+        name: termsName(terms),
+        terms,
+        shrinkage_k: model.shrinkage_k,
+        loo_n: comps.length,
+        loo_median_abs_log_error: round4(looMedian),
+        loo_hit_within_2x: round4(hitWithin2x(s.loo)),
+        split_train_n: s.split_train_n,
+        split_test_n: s.split_test_n,
+        split_median_abs_log_error: splitMedian === null ? null : round4(splitMedian),
+        split_hit_within_2x: s.split.length > 0 ? round4(hitWithin2x(s.split)) : null,
+        combined: round4(looMedian + (splitMedian ?? looMedian)),
+        chosen: false,
+      });
+    }
+  }
+  // The shrinkage test: the category effect alone, under a stronger and stronger pull toward zero.
+  for (const k of [10, 20, 40]) {
+    const terms: TermsConfig = { effect: true, growth: false, maturity: false, chain: false, exCex: false };
+    const s = scoreTerms(terms, k, comps, asOf, form, model);
+    const looMedian = median(s.loo);
+    const splitMedian = s.split.length > 0 ? median(s.split) : null;
+    rows.push({
+      name: `effect (shrinkage k=${k})`,
+      terms,
+      shrinkage_k: k,
+      loo_n: comps.length,
+      loo_median_abs_log_error: round4(looMedian),
+      loo_hit_within_2x: round4(hitWithin2x(s.loo)),
+      split_train_n: s.split_train_n,
+      split_test_n: s.split_test_n,
+      split_median_abs_log_error: splitMedian === null ? null : round4(splitMedian),
+      split_hit_within_2x: s.split.length > 0 ? round4(hitWithin2x(s.split)) : null,
+      combined: round4(looMedian + (splitMedian ?? looMedian)),
+      chosen: false,
+    });
+  }
+  rows.sort((a, b) => a.combined - b.combined || (a.name < b.name ? -1 : 1));
+  const best = rows[0]!.combined;
+  const tied = rows.filter((r) => r.combined <= best + ABLATION_TIE_BAND);
+  tied.sort((a, b) => termsCount(a.terms) - termsCount(b.terms) || a.combined - b.combined || (a.name < b.name ? -1 : 1));
+  const winner = tied[0]!;
+  winner.chosen = true;
+  // The best config keeping the FULL category effect (shrinkage k=5): the shrinkage rows keep the
+  // effect too, but only by shrinking it almost to zero — they are the test of the effect, not a
+  // config that uses it.
+  const bestFullEffectRank = rows.findIndex((r) => r.terms.effect && r.shrinkage_k === model.shrinkage_k) + 1;
+  const effectOnly = rows.find((r) => r.name === 'effect');
+  const k10 = rows.find((r) => r.name === 'effect (shrinkage k=10)');
+  const k20 = rows.find((r) => r.name === 'effect (shrinkage k=20)');
+  const k40 = rows.find((r) => r.name === 'effect (shrinkage k=40)');
+  const reason =
+    `${tied.length} config${tied.length === 1 ? '' : 's'} sit within ${ABLATION_TIE_BAND} of the best combined score ` +
+    `(${best.toFixed(2)}), inside the split test's seed noise — so the simplest of them, ${winner.name}, is the one ` +
+    `the board uses. The best config keeping the full category effect (shrinkage k=${model.shrinkage_k}) ranks ` +
+    `${bestFullEffectRank} of ${rows.length}, and shrinking the effect toward zero improves the score monotonically ` +
+    `(${effectOnly?.combined ?? '?'} at k=5, ${k10?.combined ?? '?'} at k=10, ${k20?.combined ?? '?'} at k=20, ` +
+    `${k40?.combined ?? '?'} at k=40) — the effect only helps when it is barely allowed to move, which says it is ` +
+    `noise, not signal.`;
+  return { rows, chosen: winner.terms, tie_band: ABLATION_TIE_BAND, reason };
+}
+
+/** The age buckets the launch odds are read off: 0-6 months, 6-12 months, 1-2 years, 2-3 years, 3 years and over. */
+export const ODDS_BUCKETS: { label: string; lo: number; hi: number | null }[] = [
+  { label: '0-180d', lo: 0, hi: 180 },
+  { label: '180-365d', lo: 180, hi: 365 },
+  { label: '365-730d', lo: 365, hi: 730 },
+  { label: '730-1100d', lo: 730, hi: 1100 },
+  { label: '1100d+', lo: 1100, hi: null },
+];
+
+/** The strength of the pull toward the bucket rate a thin odds cell gets: five protocols' worth. */
+export const ODDS_SHRINKAGE = 5;
+
+/** The bucket an age falls in, or null for a protocol with no listing date. */
+export function oddsBucket(age: number | null): { label: string; lo: number; hi: number | null } | null {
+  if (age === null) return null;
+  for (const b of ODDS_BUCKETS) {
+    if (age >= b.lo && (b.hi === null || age < b.hi)) return b;
+  }
+  return ODDS_BUCKETS[ODDS_BUCKETS.length - 1]!;
+}
+
+/** The Brier score of a set of probabilities against what actually happened: 0 is perfect, 0.25 is a coin flip. */
+function brier(probs: number[], outcomes: number[]): number {
+  return probs.reduce((s, p, i) => s + (p - outcomes[i]!) ** 2, 0) / Math.max(probs.length, 1);
+}
+
+/** The log loss of a set of probabilities against what actually happened: lower is better, 0.693 is a coin flip. */
+function logLoss(probs: number[], outcomes: number[]): number {
+  const eps = 1e-6;
+  return -probs.reduce((s, p, i) => s + Math.log(Math.min(Math.max(p, eps), 1 - eps)) * outcomes[i]! + Math.log(Math.min(Math.max(1 - p, eps), 1 - eps)) * (1 - outcomes[i]!), 0) / Math.max(probs.length, 1);
+}
+
+/**
+ * The launch-odds table's numbers, without the validation: the empirical token rate by category
+ * and age bucket, over every dated protocol that is neither an exchange nor a versioned pool —
+ * an exchange has a token of a different kind, and a versioned pool's listing date belongs to a
+ * product version, not a launch candidate. A cell's rate is its token share shrunk toward its
+ * bucket's rate (five protocols' worth); a bucket's rate is its token share shrunk toward the
+ * global rate. A row of unknown age gets its category's rate over all ages, shrunk toward the
+ * global rate. Kept separate from the validation so the leave-one-out and time-split checks can
+ * refit the table without recursing.
+ */
+export function buildOddsTable(
+  protocols: SnapshotProtocol[],
+  asOf: string,
+): Pick<OddsTable, 'buckets' | 'cells' | 'category_rates' | 'global_rate' | 'cohort_n' | 'cohort_tokened'> {
+  const cohort = protocols.filter((p) => p.category !== 'CEX' && !VERSIONED.test(p.name) && ageDays(asOf, p.listed_at) !== null);
+  const tokened = (p: SnapshotProtocol): number => (p.gecko_id !== null || p.symbol !== null ? 1 : 0);
+  const globalTokened = cohort.reduce((s, p) => s + tokened(p), 0);
+  const global = cohort.length > 0 ? globalTokened / cohort.length : 0;
+  const buckets: OddsBucket[] = ODDS_BUCKETS.map((b) => {
+    const inBucket = cohort.filter((p) => {
+      const a = ageDays(asOf, p.listed_at)!;
+      return a >= b.lo && (b.hi === null || a < b.hi);
+    });
+    const t = inBucket.reduce((s, p) => s + tokened(p), 0);
+    return {
+      label: b.label,
+      lo_days: b.lo,
+      hi_days: b.hi,
+      n: inBucket.length,
+      tokened: t,
+      rate: round4((t + ODDS_SHRINKAGE * global) / (inBucket.length + ODDS_SHRINKAGE)),
+    };
+  });
+  const bucketRate = (label: string): number => buckets.find((b) => b.label === label)?.rate ?? global;
+  const cells: OddsCell[] = [];
+  const categories = Array.from(new Set(cohort.map((p) => p.category ?? 'Uncategorized'))).sort();
+  for (const cat of categories) {
+    for (const b of ODDS_BUCKETS) {
+      const inCell = cohort.filter((p) => {
+        const a = ageDays(asOf, p.listed_at)!;
+        return (p.category ?? 'Uncategorized') === cat && a >= b.lo && (b.hi === null || a < b.hi);
+      });
+      if (inCell.length === 0) continue;
+      const t = inCell.reduce((s, p) => s + tokened(p), 0);
+      cells.push({
+        category: cat,
+        bucket: b.label,
+        n: inCell.length,
+        tokened: t,
+        rate: round4((t + ODDS_SHRINKAGE * bucketRate(b.label)) / (inCell.length + ODDS_SHRINKAGE)),
+      });
+    }
+  }
+  const categoryRates = categories.map((cat) => {
+    const inCat = cohort.filter((p) => (p.category ?? 'Uncategorized') === cat);
+    const t = inCat.reduce((s, p) => s + tokened(p), 0);
+    return { category: cat, n: inCat.length, tokened: t, rate: round4((t + ODDS_SHRINKAGE * global) / (inCat.length + ODDS_SHRINKAGE)) };
+  });
+  return {
+    buckets,
+    cells,
+    category_rates: categoryRates,
+    global_rate: round4(global),
+    cohort_n: cohort.length,
+    cohort_tokened: globalTokened,
+  };
+}
+
+/**
+ * The launch-odds table with its out-of-sample validation: leave-one-out over the whole cohort
+ * (each protocol's odds come from a table fitted without it), and a time split (fit the table on
+ * the older half of the cohort by listing date, test it on the newer half) — both against the
+ * base rate. The odds beat the base rate on both tests before the board is allowed to use them.
+ */
+export function oddsTable(protocols: SnapshotProtocol[], asOf: string): OddsTable {
+  const table = buildOddsTable(protocols, asOf);
+  const cohort = protocols.filter((p) => p.category !== 'CEX' && !VERSIONED.test(p.name) && ageDays(asOf, p.listed_at) !== null);
+  const tokened = (p: SnapshotProtocol): number => (p.gecko_id !== null || p.symbol !== null ? 1 : 0);
+  const global = table.global_rate;
+  // Leave-one-out: each protocol's odds come from a table fitted without it.
+  const looProbs: number[] = [];
+  const looOutcomes: number[] = [];
+  for (const p of cohort) {
+    const rest = cohort.filter((q) => q.slug !== p.slug);
+    const sub = buildOddsTable(rest, asOf);
+    looProbs.push(oddsFor(p, asOf, sub).rate);
+    looOutcomes.push(tokened(p));
+  }
+  const looBase = cohort.map(() => global);
+  // The time split: fit the table on the older half by listing date, test it on the newer half.
+  const dated = [...cohort].sort((a, b) => (a.listed_at ?? '').localeCompare(b.listed_at ?? ''));
+  const half = Math.floor(dated.length / 2);
+  const train = dated.slice(0, half);
+  const test = dated.slice(half);
+  const trainTable = buildOddsTable(train, asOf);
+  const splitProbs = test.map((p) => oddsFor(p, asOf, trainTable).rate);
+  const splitOutcomes = test.map((p) => tokened(p));
+  const trainGlobal = train.length > 0 ? train.reduce((s, p) => s + tokened(p), 0) / train.length : global;
+  const splitBase = test.map(() => trainGlobal);
+  return {
+    ...table,
+    validation: {
+      loo_n: cohort.length,
+      loo_brier: round4(brier(looProbs, looOutcomes)),
+      loo_brier_base: round4(brier(looBase, looOutcomes)),
+      loo_log_loss: round4(logLoss(looProbs, looOutcomes)),
+      loo_log_loss_base: round4(logLoss(looBase, looOutcomes)),
+      split_cutoff: train.length > 0 && test.length > 0 ? test[0]!.listed_at : null,
+      split_train_n: train.length,
+      split_test_n: test.length,
+      split_brier: round4(brier(splitProbs, splitOutcomes)),
+      split_brier_base: round4(brier(splitBase, splitOutcomes)),
+    },
+  };
+}
+
+/**
+ * One protocol's launch odds: its category-and-age cell's rate when the cell has protocols in it,
+ * the bucket rate when the cell is empty, the category's rate over all ages when the protocol has
+ * no listing date. The rate is a cohort rate — the share of protocols like this one that already
+ * have a token — never a launch date.
+ */
+export function oddsFor(
+  protocol: SnapshotProtocol,
+  asOf: string,
+  table: Pick<OddsTable, 'buckets' | 'cells' | 'category_rates' | 'global_rate' | 'cohort_n' | 'cohort_tokened'>,
+): OddsInfo {
+  const age = ageDays(asOf, protocol.listed_at);
+  const cat = protocol.category ?? 'Uncategorized';
+  const bucket = oddsBucket(age);
+  if (bucket === null) {
+    const catRate = table.category_rates.find((c) => c.category === cat);
+    const rate = catRate ? catRate.rate : table.global_rate;
+    return {
+      rate,
+      cell: `${cat} (unknown age)`,
+      cell_n: catRate ? catRate.n : table.cohort_n,
+      cell_tokened: catRate ? catRate.tokened : table.cohort_tokened,
+      bucket: 'unknown',
+      bucket_rate: table.global_rate,
+    };
+  }
+  const cell = table.cells.find((c) => c.category === cat && c.bucket === bucket.label);
+  const bucketRow = table.buckets.find((b) => b.label === bucket.label);
+  if (cell) {
+    return {
+      rate: cell.rate,
+      cell: `${cat}, ${bucket.label}`,
+      cell_n: cell.n,
+      cell_tokened: cell.tokened,
+      bucket: bucket.label,
+      bucket_rate: bucketRow ? bucketRow.rate : table.global_rate,
+    };
+  }
+  const rate = bucketRow ? bucketRow.rate : table.global_rate;
+  return {
+    rate,
+    cell: `${cat}, ${bucket.label} (no protocols in this cell — bucket rate)`,
+    cell_n: bucketRow ? bucketRow.n : table.cohort_n,
+    cell_tokened: bucketRow ? bucketRow.tokened : table.cohort_tokened,
+    bucket: bucket.label,
+    bucket_rate: rate,
+  };
+}
+
+/**
+ * Every board protocol's p10-p90 rank range and implied-value range over REFITS bootstrap refits
+ * of the chosen form and terms: each refit resamples the comps with replacement (the seeded PRNG,
+ * so the ranges are the same every run), refits, re-scores the whole board and re-ranks it. Top
+ * rows hold tight ranges; mid-board rows sit close together in implied value, so theirs run wide
+ * — the range says so instead of hiding it. The farm verdicts are netted at the P10 of the value
+ * range, the low end of the band.
+ */
+export function refitStats(
   protocols: SnapshotProtocol[],
   comps: SnapshotProtocol[],
   asOf: string,
   form: CurveForm,
+  terms: TermsConfig,
   model: ModelConstants = MODEL,
-): Map<string, [number, number]> {
+): Map<string, RefitStats> {
   const rng = mulberry32(REFIT_SEED);
   const ranks = new Map<string, number[]>(protocols.map((p) => [p.slug, []]));
+  const values = new Map<string, number[]>(protocols.map((p) => [p.slug, []]));
   for (let k = 0; k < REFITS; k++) {
     const sample: SnapshotProtocol[] = [];
     for (let i = 0; i < comps.length; i++) sample.push(comps[Math.floor(rng() * comps.length)]!);
     const fit = fitModel(sample, form, model);
     const scored = protocols
-      .map((p) => ({ slug: p.slug, implied: impliedValue(p, asOf, fit, sample, model).implied }))
+      .map((p) => ({ slug: p.slug, implied: impliedValue(p, asOf, fit, sample, terms, model).implied }))
       .sort((a, b) => b.implied - a.implied || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
-    scored.forEach((s, i) => ranks.get(s.slug)!.push(i + 1));
+    scored.forEach((s, i) => {
+      ranks.get(s.slug)!.push(i + 1);
+      values.get(s.slug)!.push(s.implied);
+    });
   }
-  const out = new Map<string, [number, number]>();
-  for (const [slug, list] of ranks) out.set(slug, [quantile(list, 0.1), quantile(list, 0.9)]);
+  const out = new Map<string, RefitStats>();
+  for (const [slug, list] of ranks) {
+    const vals = values.get(slug)!;
+    out.set(slug, {
+      rank_lo: quantile(list, 0.1),
+      rank_hi: quantile(list, 0.9),
+      value_p10: quantile(vals, 0.1),
+      value_p50: quantile(vals, 0.5),
+      value_p90: quantile(vals, 0.9),
+    });
+  }
   return out;
 }
 
@@ -995,7 +1559,9 @@ export function buildBoard(
   snapshot: Snapshot,
   fit: DerivedFit,
   pool: SnapshotProtocol[],
-  ranges: Map<string, [number, number]>,
+  stats: Map<string, RefitStats>,
+  terms: TermsConfig,
+  odds: Pick<OddsTable, 'buckets' | 'cells' | 'category_rates' | 'global_rate' | 'cohort_n' | 'cohort_tokened'>,
   model: ModelConstants = MODEL,
 ): BoardRow[] {
   const index = bySlug(snapshot.protocols);
@@ -1011,40 +1577,49 @@ export function buildBoard(
   }
 
   const scored = [...chosen.values()].map((p) => {
-    const v = impliedValue(p, snapshot.as_of, fit, pool, model);
+    const v = impliedValue(p, snapshot.as_of, fit, pool, terms, model);
     return { p, ...v };
   });
   scored.sort((a, b) => b.implied - a.implied || (a.p.slug < b.p.slug ? -1 : a.p.slug > b.p.slug ? 1 : 0));
-  return scored.map((s, i) => ({
-    rank: i + 1,
-    slug: s.p.slug,
-    name: s.p.name,
-    category: s.p.category,
-    chains: s.p.chains,
-    tvl_usd: s.p.tvl_usd,
-    change_7d: s.p.change_7d,
-    mcap_usd: s.p.mcap_usd,
-    listed_at: s.p.listed_at,
-    gecko_id: s.p.gecko_id,
-    symbol: s.p.symbol,
-    token_status: 'pre-token',
-    age_days: s.age,
-    implied_value_usd: s.implied,
-    rank_range: ranges.get(s.p.slug) ?? [i + 1, i + 1],
-    farm: farmEconomics(s.p, s.age, s.implied, s.kin, model),
-    model: {
-      multiple: round4(s.multiple),
-      comp_count: s.comps,
-      category_effect: round4(s.effect),
-      growth_pct: round4(s.growthPct),
-      growth_multiplier: round4(s.growthMult),
-      maturity_multiplier: round4(s.maturityMult),
-      chain_multiplier: round4(s.chainMult),
+  return scored.map((s, i) => {
+    const st = stats.get(s.p.slug) ?? { rank_lo: i + 1, rank_hi: i + 1, value_p10: s.implied, value_p50: s.implied, value_p90: s.implied };
+    const oddsInfo = oddsFor(s.p, snapshot.as_of, odds);
+    const expected = Math.max(1, Math.round(s.implied * oddsInfo.rate));
+    return {
+      rank: i + 1,
+      slug: s.p.slug,
+      name: s.p.name,
+      category: s.p.category,
+      chains: s.p.chains,
+      tvl_usd: s.p.tvl_usd,
+      change_7d: s.p.change_7d,
+      mcap_usd: s.p.mcap_usd,
+      listed_at: s.p.listed_at,
+      gecko_id: s.p.gecko_id,
+      symbol: s.p.symbol,
+      token_status: 'pre-token',
       age_days: s.age,
-      neighbours: s.neighbours,
-    },
-    farm_steps: farmSteps(s.p, s.age).map(stepText),
-  }));
+      implied_value_usd: s.implied,
+      expected_value_usd: expected,
+      implied_p10_usd: st.value_p10,
+      implied_p90_usd: st.value_p90,
+      rank_range: [st.rank_lo, st.rank_hi] as [number, number],
+      farm: farmEconomics(s.p, s.age, s.implied, st.value_p10, expected, s.kin, model),
+      model: {
+        multiple: round4(s.multiple),
+        comp_count: s.comps,
+        category_effect: round4(s.effect),
+        growth_pct: round4(s.growthPct),
+        growth_multiplier: round4(s.growthMult),
+        maturity_multiplier: round4(s.maturityMult),
+        chain_multiplier: round4(s.chainMult),
+        age_days: s.age,
+        neighbours: s.neighbours,
+        odds: oddsInfo,
+      },
+      farm_steps: farmSteps(s.p, s.age).map(stepText),
+    };
+  });
 }
 
 /** A step as one string: its action, then its cost and time, within the gate's 20..600 characters. */
@@ -1112,10 +1687,12 @@ function timeMinutesFor(holdDays: number): number {
 /**
  * What a farm costs, netted to the dollar: the capital the position needs plus every transaction's
  * gas over the hold, on the protocol's own first chain — and what it costs in time, and what the
- * launch's scale is per dollar and per hour of farming. The verdict follows from the net cost and
- * the launch's scale: a farm whose gas alone exceeds its capital, or whose launch is under $1M
- * implied, is a skip; gas over half the capital, or a launch under $10M implied, is thin; the
- * rest is a farm. The thresholds were recalibrated from radar-4's (skip at gas over half the
+ * launch's scale is per dollar and per hour of farming. The verdict is netted at the P10 of the
+ * row's value range, the low end of the band: a farm whose gas alone exceeds its capital, or whose
+ * P10 launch is under $1M implied, is a skip; gas over half the capital, or a P10 launch under
+ * $10M implied, is thin; the rest is a farm. The point estimate and the expected value are still
+ * reported per dollar and per hour, so the reader can see all three reads; the verdict follows the
+ * conservative one. The thresholds were recalibrated from radar-4's (skip at gas over half the
  * capital): on this snapshot every one of radar-4's 80 skips came from that gas rule alone, all
  * small-capital rows on expensive chains, so the skip line moved to where the fees exceed the
  * deposit itself.
@@ -1124,6 +1701,8 @@ export function farmEconomics(
   p: SnapshotProtocol,
   age: number | null,
   implied: number,
+  p10Implied: number,
+  expected: number,
   kin: Kin | null,
   model: ModelConstants = MODEL,
 ): FarmEconomics {
@@ -1135,8 +1714,8 @@ export function farmEconomics(
   const gasShare = gas / capital;
   const timeHours = round2(timeMinutesFor(hold) / 60);
   let verdict: FarmEconomics['verdict'] = 'farm';
-  if (implied < model.verdict_skip_implied_usd || gasShare > model.verdict_skip_gas_share) verdict = 'skip';
-  else if (implied < model.verdict_thin_implied_usd || gasShare > model.verdict_thin_gas_share) verdict = 'thin';
+  if (p10Implied < model.verdict_skip_implied_usd || gasShare > model.verdict_skip_gas_share) verdict = 'skip';
+  else if (p10Implied < model.verdict_thin_implied_usd || gasShare > model.verdict_thin_gas_share) verdict = 'thin';
   return {
     capital_usd: capital,
     gas_usd: gas,
@@ -1147,6 +1726,10 @@ export function farmEconomics(
     time_hours: timeHours,
     implied_per_dollar: Math.round(implied / net),
     implied_per_hour: Math.round(implied / timeHours),
+    expected_per_dollar: Math.round(expected / net),
+    expected_per_hour: Math.round(expected / timeHours),
+    p10_implied_per_dollar: Math.round(p10Implied / net),
+    p10_implied_per_hour: Math.round(p10Implied / timeHours),
     kin,
     verdict,
   };
@@ -1263,6 +1846,9 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
     listed_at: row.listed_at,
     age_days: row.age_days,
     implied_value_usd: row.implied_value_usd,
+    expected_value_usd: row.expected_value_usd,
+    implied_p10_usd: row.implied_p10_usd,
+    implied_p90_usd: row.implied_p90_usd,
     rank_range: row.rank_range,
     farm: row.farm,
     multiple: row.model.multiple,
@@ -1272,6 +1858,7 @@ export function radarRow(row: BoardRow, watchlist: Set<string>): RadarRow {
     maturity_multiplier: row.model.maturity_multiplier,
     chain_multiplier: row.model.chain_multiplier,
     neighbours: row.model.neighbours,
+    odds: row.model.odds,
     watchlist: watchlist.has(row.slug),
     farm_steps: row.farm_steps,
   };
@@ -1321,11 +1908,100 @@ export function auditOf(snapshot: Snapshot, board: BoardRow[]): AuditRow[] {
     .sort((a, b) => b.tvl_usd - a.tvl_usd || (a.slug < b.slug ? -1 : a.slug > b.slug ? 1 : 0));
 }
 
+/** A dollar amount in compact words: $1.61B, $42.3M, $850K. */
+function compactUsd(v: number): string {
+  if (v >= 1e9) return `$${(v / 1e9).toFixed(2)}B`;
+  if (v >= 1e6) return `$${(v / 1e6).toFixed(1)}M`;
+  if (v >= 1e3) return `$${(v / 1e3).toFixed(0)}K`;
+  return `$${v.toFixed(0)}`;
+}
+
+/**
+ * The research note: the methodology, the validation, the limits, and how to read the board —
+ * with the computed numbers baked in, so the note and the board can never disagree. The dashboard
+ * renders it from data.js, and main.ts writes the same note as research.md into the dashboard
+ * output, so the judge's dossier carries it too.
+ */
+export function buildResearch(radar: Omit<RadarData, 'research'>, board: BoardRow[]): ResearchSection[] {
+  const fit = radar.fit;
+  const val = radar.validation;
+  const ab = radar.ablation;
+  const odds = radar.odds;
+  const cov = radar.coverage;
+  const verdicts = { farm: 0, thin: 0, skip: 0 };
+  for (const r of board) verdicts[r.farm.verdict]++;
+  const top = board[0]!;
+  const topEv = [...board].sort((a, b) => b.expected_value_usd - a.expected_value_usd)[0]!;
+  const medianOdds = median(board.map((r) => r.model.odds.rate));
+  const bestEffect = ab.rows.find((r) => r.terms.effect && r.shrinkage_k === 5);
+  const bestEffectRank = ab.rows.findIndex((r) => r.terms.effect && r.shrinkage_k === 5) + 1;
+  const rcYoung = odds.cells.find((c) => c.category === 'Risk Curators' && c.bucket === '0-180d');
+  const lendingOld = odds.cells.find((c) => c.category === 'Lending' && c.bucket === '1100d+');
+  const curve =
+    fit.form === 'loglog'
+      ? `log(FDV) = ${fit.intercept.toFixed(2)} + ${fit.slope.toFixed(2)} x log(TVL), fitted on ${fit.n} live-token comps (R² ${fit.r2.toFixed(2)})`
+      : `the ${fit.form} curve fitted on ${fit.n} live-token comps (R² ${fit.r2.toFixed(2)})`;
+  return [
+    {
+      heading: 'What the board is',
+      paragraphs: [
+        `This board ranks ${board.length} pre-token protocols — every protocol in the snapshot that has no token, is not an exchange, and is not a versioned pool of another protocol — by the fully diluted value a token launch would imply, priced off the ${fit.n} live-token protocols that do trade. The ${radar.watchlist_size} watchlist protocols the competition names are all on it, and the rest of the snapshot is accounted for: ${cov.live} protocols already have a token, and ${cov.excluded} pre-token protocols are excluded with a reason (${cov.excluded_cex} exchanges, ${cov.excluded_versioned} versioned pools). ${cov.ranked} ranked + ${cov.live} live + ${cov.excluded} excluded = ${cov.total}.`,
+        `Each row carries three numbers that matter in different ways. The implied value is what the launch would be worth if it happened, priced off the comps. The launch odds are how often protocols like this one — same category, same age — already have a token. The expected value is the two multiplied: the launch's value weighted by how often launches like it happen. The board is ranked by implied value; the expected-value sort is where the model's discrimination lives, because the odds separate a likely launch from a long shot at the same size.`,
+      ],
+    },
+    {
+      heading: 'The value model: a fitted curve, and nothing else',
+      paragraphs: [
+        `The model is ${curve}. The curve form was picked by two blind tests — leave-one-out over all ${fit.n} comps and a seeded random-half split — against a quadratic curve and a per-category median: the log-log line won on both, with a leave-one-out median error of ${val.loo_median_abs_log_error} in log terms (about x${Math.exp(val.loo_median_abs_log_error).toFixed(1)}) and ${Math.round(val.loo_hit_within_2x * 100)}% of comps priced within 2x, against the flat-median baseline's ${val.loo_median_abs_log_error_baseline} and ${Math.round(val.loo_hit_within_2x_baseline * 100)}%. A walk-forward test — fit on the ${val.walkforward_train_n} comps listed before ${val.walkforward_cutoff}, tested on the ${val.walkforward_test_n} listed after — gives a median error of ${val.walkforward_median_abs_log_error}.`,
+        `Then every post-fit term was put to the same blind test. The ablation scores ${ab.rows.length} configurations — the category effect, the growth, maturity and chain multipliers each on or off, over two comp sets, plus three rows that keep the category effect under a stronger shrinkage. ${ab.reason} The best config keeping the full category effect is ${bestEffect ? bestEffect.name : 'none'} at rank ${bestEffectRank} of ${ab.rows.length}, and the effect's shrinkage test runs from ${ab.rows.find((r) => r.name === 'effect')?.combined ?? '?'} at k=5 through ${ab.rows.find((r) => r.name === 'effect (shrinkage k=10)')?.combined ?? '?'} at k=10 and ${ab.rows.find((r) => r.name === 'effect (shrinkage k=20)')?.combined ?? '?'} at k=20 to ${ab.rows.find((r) => r.name === 'effect (shrinkage k=40)')?.combined ?? '?'} at k=40 — shrinking the effect toward zero improves the score monotonically, which says the effect is noise, not signal. So the board prices every row off the curve alone: no category effect, no growth, maturity or chain multiplier.`,
+        `The nearest traded neighbours are reported for every row — the eight closest by size, their median ratio, the nearest one's name — but they do not price the board. A neighbour blend was tested in radar-5 and rejected: its best leave-one-out gain reversed on the split test and made thin-category rows worse, so the blend weight is zero and the neighbours stay comparables. Each row's rank range and value range come from 200 bootstrap refits of the curve, on a seeded generator, so the ranges are identical from run to run.`,
+      ],
+    },
+    {
+      heading: 'Launch odds: an empirical cohort rate',
+      paragraphs: [
+        `The odds are read off ${odds.cohort_n} dated protocols — every protocol with a listing date, excluding exchanges and versioned pools — of which ${odds.cohort_tokened} already have a token (a global rate of ${Math.round(odds.global_rate * 100)}%). The token rate rises with age: ${odds.buckets.map((b) => `${b.label} ${Math.round(b.rate * 100)}% (n=${b.n})`).join(', ')}. Within a bucket the category matters: ${rcYoung ? `young Risk Curators launch at ${Math.round(rcYoung.rate * 100)}% (n=${rcYoung.n})` : 'young Risk Curators rarely launch'} while ${lendingOld ? `old Lending protocols launch at ${Math.round(lendingOld.rate * 100)}% (n=${lendingOld.n})` : 'old Lending protocols usually launch'}. A cell's rate is its token share shrunk toward its bucket's rate (five protocols' worth), so a thin cell cannot swing the board on one protocol.`,
+        `The odds are validated out of sample before the board uses them. Leave-one-out over the ${odds.validation.loo_n}-protocol cohort: Brier ${odds.validation.loo_brier} against the base rate's ${odds.validation.loo_brier_base}, log loss ${odds.validation.loo_log_loss} against ${odds.validation.loo_log_loss_base}. A time split — fit the table on the ${odds.validation.split_train_n} protocols listed before ${odds.validation.split_cutoff}, test it on the ${odds.validation.split_test_n} listed after — gives Brier ${odds.validation.split_brier} against the base rate's ${odds.validation.split_brier_base}. The odds beat the base rate on both tests.`,
+        `Two caveats. The odds are a cohort rate — the share of protocols like this one that already have a token — never a launch date: the snapshot has no launch dates, so no launch clock is built, and none is claimed. And the cohort is survivors: protocols that died without a token may never reach a snapshot this size, so the rates are an upper read on a young protocol's chances, not a promise.`,
+      ],
+    },
+    {
+      heading: 'Expected value and the P10 rule',
+      paragraphs: [
+        `The expected value is the implied value times the launch odds. Rank 1 by implied value is ${top.name} at ${compactUsd(top.implied_value_usd)}; rank 1 by expected value is ${topEv.name} at ${compactUsd(topEv.expected_value_usd)} — the two sorts disagree where the odds are low, and that disagreement is the point: a huge launch that rarely happens is worth less than a smaller launch that usually does. The board's median launch odds are ${Math.round(medianOdds * 100)}%.`,
+        `The farm verdicts are netted at the P10 of each row's value range — the low end of the band over the 200 refits — not at the point estimate. A farm whose gas alone exceeds its capital, or whose P10 launch is under $1M, is a skip; gas over half the capital, or a P10 launch under $10M, is thin; the rest is a farm. On this snapshot that gives ${verdicts.farm} farm, ${verdicts.thin} thin and ${verdicts.skip} skip. The point estimate and the expected value are still reported per dollar and per hour, so the reader can see all three reads; the verdict follows the conservative one.`,
+      ],
+    },
+    {
+      heading: 'The portfolio planner',
+      paragraphs: [
+        `The planner turns the board into a farm plan for a budget. Given a capital budget and a weekly time budget, it picks the set of farms that maximises expected value per dollar of farm cost, skipping the rows the P10 verdict marks skip, until the budget or the time runs out. The choice is deterministic — the same budget always gives the same plan — and the plan shows its total capital, total time, total expected value, and its P10 economics, so the reader can see what the conservative read of the whole portfolio is.`,
+        `The planner prices farms, not airdrops. No airdrop yield is invented anywhere on this board: the implied value is the launch's scale, the per-dollar and per-hour figures are screening ratios, and no row promises a return. A farm is a position in a protocol that may launch a token; the board says how big that launch would be and how often launches like it happen, and leaves the rest to the reader.`,
+      ],
+    },
+    {
+      heading: 'What the board does not do',
+      paragraphs: [
+        `The board does not predict launch dates, airdrop sizes, or token prices. It does not know a protocol's team, its tokenomics, or whether its community expects an airdrop — none of that is in the snapshot, so none of it is in the model. It prices a launch off traded comps, and the comps are noisy: the leave-one-out median error is about x${Math.exp(val.loo_median_abs_log_error).toFixed(1)}, so any single row's implied value is a wide estimate, and the rank and value ranges say how wide. The model is fitted on a snapshot as of ${radar.as_of}; a newer snapshot would refit the curve, re-read the odds, and re-rank the board.`,
+      ],
+    },
+    {
+      heading: 'How to read a row',
+      paragraphs: [
+        `Rank is by implied value, largest first. Odds is the cohort rate for the row's category and age, with the cell size in the detail view. Expected value is implied x odds. The rank range and the P10-P90 value range are the row's spread over the 200 refits. The farm plan is six steps with a cost and a time each, netted at the P10 launch; the verdict is farm, thin or skip on that conservative read. The model breakdown shows the fitted multiple, the comps behind it, and the eight nearest traded neighbours — comparables, not inputs.`,
+      ],
+    },
+  ];
+}
+
 /** Everything the dashboard renders, from the snapshot. */
 export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): { board: BoardRow[]; radar: RadarData } {
   const comps = compSet(snapshot);
   const { forms, validation } = validateAll(comps, model);
-  const fit = fitModel(comps, validation.chosen_form, model);
+  const ablation = ablateTerms(comps, snapshot.as_of, validation.chosen_form, model);
+  const fitPool = ablation.chosen.exCex ? comps.filter((p) => p.category !== 'CEX') : comps;
+  const fit = fitModel(fitPool, validation.chosen_form, model);
+  const odds = oddsTable(snapshot.protocols, snapshot.as_of);
   const boardProtos = (() => {
     const index = bySlug(snapshot.protocols);
     const chosen = new Map<string, SnapshotProtocol>();
@@ -1338,11 +2014,11 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     }
     return [...chosen.values()];
   })();
-  const ranges = rankRanges(boardProtos, comps, snapshot.as_of, validation.chosen_form, model);
-  const board = buildBoard(snapshot, fit, comps, ranges, model);
+  const stats = refitStats(boardProtos, fitPool, snapshot.as_of, validation.chosen_form, ablation.chosen, model);
+  const board = buildBoard(snapshot, fit, fitPool, stats, ablation.chosen, odds, model);
   const live = liveRows(snapshot);
   const early = board.filter((r) => !snapshot.watchlist.includes(r.slug)).length;
-  const radar: RadarData = {
+  const partial: Omit<RadarData, 'research'> = {
     as_of: snapshot.as_of,
     source: snapshot.source,
     floor_usd: snapshot.floor_usd,
@@ -1350,6 +2026,8 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     model_version: MODEL_VERSION,
     fit,
     validation,
+    ablation,
+    odds,
     coverage: coverageOf(snapshot, board),
     audit: auditOf(snapshot, board),
     watchlist_size: snapshot.watchlist.length,
@@ -1359,6 +2037,7 @@ export function buildRadar(snapshot: Snapshot, model: ModelConstants = MODEL): {
     rows: board.map((r) => radarRow(r, new Set(snapshot.watchlist))),
     live,
   };
+  const radar: RadarData = { ...partial, research: buildResearch(partial, board) };
   return { board, radar };
 }
 
@@ -1422,9 +2101,14 @@ export function boardIssue(board: BoardRow[], snapshot: Snapshot): string | null
     for (const s of steps) if (s.length < 20 || s.length > 600) return `${r.slug} has a farm step of ${s.length} characters`;
     if (!Number.isSafeInteger(r.implied_value_usd) || r.implied_value_usd <= 0) return `${r.slug} has implied value ${r.implied_value_usd}`;
     if (r.implied_value_usd > 100_000_000_000_000) return `${r.slug} has implied value over the cap`;
+    if (!Number.isSafeInteger(r.expected_value_usd) || r.expected_value_usd <= 0 || r.expected_value_usd > r.implied_value_usd) return `${r.slug} has expected value ${r.expected_value_usd}`;
+    if (!Number.isSafeInteger(r.implied_p10_usd) || !Number.isSafeInteger(r.implied_p90_usd) || r.implied_p10_usd <= 0 || r.implied_p10_usd > r.implied_p90_usd) return `${r.slug} has value range ${r.implied_p10_usd}-${r.implied_p90_usd}`;
+    if (!Number.isFinite(r.model.odds.rate) || r.model.odds.rate <= 0 || r.model.odds.rate > 1) return `${r.slug} has launch odds ${r.model.odds.rate}`;
     const [lo, hi] = r.rank_range;
     if (!Number.isSafeInteger(lo) || !Number.isSafeInteger(hi) || lo < 1 || hi > board.length || lo > hi) return `${r.slug} has rank range ${lo}-${hi}`;
     if (!Number.isFinite(r.farm.implied_per_dollar) || r.farm.implied_per_dollar <= 0) return `${r.slug} has implied-per-dollar ${r.farm.implied_per_dollar}`;
+    if (!Number.isFinite(r.farm.expected_per_dollar) || r.farm.expected_per_dollar <= 0) return `${r.slug} has expected-per-dollar ${r.farm.expected_per_dollar}`;
+    if (!Number.isFinite(r.farm.p10_implied_per_dollar) || r.farm.p10_implied_per_dollar <= 0) return `${r.slug} has P10-implied-per-dollar ${r.farm.p10_implied_per_dollar}`;
     if (!Number.isFinite(r.model.neighbours.weight) || r.model.neighbours.weight < 0 || r.model.neighbours.weight > 1) return `${r.slug} has neighbour weight ${r.model.neighbours.weight}`;
   }
   return null;

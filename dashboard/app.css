@@ -91,6 +91,38 @@ tbody tr:hover, tbody tr.sel { background: var(--panel2); }
 .audit h2 { margin: 0 0 8px; font-size: 18px; }
 .audit p { color: var(--muted); font-size: 14px; margin: 0 0 12px; max-width: 860px; }
 .audit tbody tr { cursor: default; }
+.odds { margin-top: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+.odds h2 { margin: 0 0 8px; font-size: 18px; }
+.odds h3 { margin: 16px 0 8px; font-size: 15px; }
+.odds p { color: var(--muted); font-size: 14px; margin: 0 0 12px; max-width: 860px; }
+.odds table { max-width: 860px; }
+.odds tbody tr { cursor: default; }
+.planner { margin-top: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+.planner h2 { margin: 0 0 8px; font-size: 18px; }
+.planner p { color: var(--muted); font-size: 14px; margin: 0 0 12px; max-width: 860px; }
+.planner p b { color: var(--text); }
+.plan-controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: flex-end; margin-bottom: 12px; }
+.plan-controls label { color: var(--muted); font-size: 13px; }
+.plan-controls input, .plan-controls button, .presets button {
+  background: var(--panel2); color: var(--text); border: 1px solid var(--line);
+  border-radius: 8px; padding: 8px 10px; font: inherit; font-size: 14px;
+}
+.plan-controls input { width: 120px; margin-left: 6px; }
+.plan-controls button, .presets button { cursor: pointer; }
+.plan-controls button:hover, .presets button:hover { border-color: var(--accent); }
+.presets { display: flex; gap: 8px; }
+.research { margin-top: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+.research h2 { margin: 0 0 8px; font-size: 18px; }
+.research h3 { margin: 16px 0 6px; font-size: 15px; }
+.research p { color: var(--muted); font-size: 14px; margin: 0 0 10px; max-width: 860px; }
+.source { margin-top: 16px; background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px; }
+.source h2 { margin: 0 0 8px; font-size: 18px; }
+.source p { color: var(--muted); font-size: 14px; margin: 0 0 12px; max-width: 860px; }
+.source pre {
+  background: var(--bg); border: 1px solid var(--line); border-radius: 8px;
+  padding: 14px 16px; margin: 0 0 12px; max-width: 860px; overflow-x: auto;
+  color: var(--text); font: 13px/1.6 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
 tr.chosen td { background: var(--panel2); border-bottom: 1px solid var(--accent); }
 .badge { display: inline-block; font-size: 11px; font-weight: 700; color: var(--accent); border: 1px solid var(--accent); border-radius: 20px; padding: 0 7px; margin-left: 6px; vertical-align: middle; }
 .badge.early { color: var(--up); border-color: var(--up); }

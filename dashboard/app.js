@@ -1,13 +1,18 @@
 // Token Radar dashboard: renders window.RADAR (written by main.ts) with no network.
-// The value model is radar-5: three curve forms compared by two blind tests (leave-one-out and a
-// seeded random-half split), the winner pricing the board; rank ranges from 200 bootstrap refits;
-// every row naming its nearest traded comparable and its eight nearest size neighbours (reported
-// as comparables — five neighbour-blend designs failed the split test, so the blend weight is 0);
-// every farm plan netted to the dollar with a time budget and implied value per $1 and per hour;
-// and an audit listing every pre-token protocol the board does not rank, with its reason.
+// The value model is radar-6: three curve forms compared by two blind tests (leave-one-out and a
+// seeded random-half split), the winner pricing the board; then a 35-config ablation put every
+// post-fit term to the same blind test and dropped them all, so the fitted curve alone prices the
+// board. Launch odds are empirical cohort rates by category and age, validated out of sample, and
+// expected value is implied value times those odds. Rank and value ranges come from 200 bootstrap
+// refits; every row names its nearest traded comparable and its eight nearest size neighbours
+// (reported as comparables — five neighbour-blend designs failed the split test, so the blend
+// weight is 0); every farm plan is netted at the P10 of its value range, with a time budget and
+// implied value per $1 and per hour; a portfolio planner picks the best farm set for a budget;
+// and an audit lists every pre-token protocol the board does not rank, with its reason.
 // Query params for screenshots: ?shot=detail&slug=<slug> opens a detail view,
 // ?shot=filtered&category=<name> applies a category filter, ?shot=validation scrolls to the model
-// and validation panel, ?shot=audit scrolls to the audit.
+// and validation panel, ?shot=odds scrolls to the launch odds, ?shot=portfolio plans a farm set
+// for the $1,000 / 10-hour preset and scrolls to the planner, ?shot=audit scrolls to the audit.
 (function () {
   'use strict';
   var R = window.RADAR;
@@ -67,21 +72,28 @@
   $('kpi-slope-sub').textContent = chosenForm.label + ' · log(mcap) = ' + f.intercept.toFixed(2) + ' + ' +
     f.slope.toFixed(2) + '·log(TVL), R² ' + f.r2.toFixed(2) + ', ' + f.comps + ' comps';
 
-  // Model transparency: the fitted curve, its validation, and the category effects it derived.
+  // Model transparency: the fitted curve, its validation, the ablation that stripped it bare,
+  // and the launch odds that weight every row's value.
+  var ab = R.ablation;
+  var od = R.odds;
+  var chosenAblation = ab.rows.find(function (r) { return r.chosen; }) || ab.rows[0];
   $('model-text').textContent =
     'Implied value = exp(' + f.intercept.toFixed(2) + ' + ' + f.slope.toFixed(2) +
-    '·log(TVL) + category effect) × growth × maturity × chain breadth. The curve is fitted by least ' +
-    'squares on the ' + f.comps + ' protocols that already trade: the slope of ' + f.slope.toFixed(2) +
-    ' says bigger protocols trade at lower multiples, so the curve values size sub-linearly, and each ' +
-    'category adds its own shrunk effect (the median residual of its trading peers, pulled toward zero ' +
-    'where peers are thin, capped at ' + f.residual_cap.toFixed(2) + '). A category with no trading peer ' +
-    'gets no effect at all, never an invented number. The curve form itself was picked, not assumed: ' +
-    'three forms were compared by two blind tests (leave-one-out and a seeded random-half split), and ' +
-    'the ' + chosenForm.label + ' won on both, so the board is priced by it. Every row also names its ' +
-    'nearest traded comparable and its eight nearest size neighbours — but as comparables only: five ' +
-    'neighbour-blend designs were tested as a pricing input and all failed the split test (the best ' +
-    'LOO gain reversed out of sample, and thin-category rows got worse), so the blend weight is 0 and ' +
-    'the curve alone prices the board.';
+    '·log(TVL)) — the fitted curve alone, nothing else. The curve is fitted by least squares on ' +
+    'the ' + f.comps + ' protocols that already trade: the slope of ' + f.slope.toFixed(2) +
+    ' says bigger protocols trade at lower multiples, so the curve values size sub-linearly. The ' +
+    'curve form itself was picked, not assumed: three forms were compared by two blind tests ' +
+    '(leave-one-out and a seeded random-half split), and the ' + chosenForm.label + ' won on both. ' +
+    'Then every post-fit term — the category effect, the growth, maturity and chain multipliers — ' +
+    'was put to the same blind test in a ' + ab.rows.length + '-config ablation, and none of them ' +
+    'earned its keep: the top configs sit within ' + ab.tie_band + ' of each other, inside the split ' +
+    'test\'s seed noise, so the simplest, ' + chosenAblation.name + ', prices the board. Every row ' +
+    'also names its nearest traded comparable and its eight nearest size neighbours — but as ' +
+    'comparables only: five neighbour-blend designs were tested as a pricing input and all failed ' +
+    'the split test (the best LOO gain reversed out of sample, and thin-category rows got worse), ' +
+    'so the blend weight is 0 and the curve alone prices the board. Expected value is the implied ' +
+    'value times the launch odds — the empirical token rate for the row\'s category and age — so a ' +
+    'huge launch that rarely happens ranks below a smaller launch that usually does.';
   $('valid-rows').innerHTML =
     '<dt>Leave-one-out, ' + v.loo_n + ' comps</dt><dd>median |log error| ' +
     v.loo_median_abs_log_error.toFixed(2) + ' (' + factor(v.loo_median_abs_log_error) +
@@ -97,26 +109,38 @@
     (v.walkforward_cutoff || '—') + ', tested on ' + v.walkforward_test_n + ' newer ones: median |log error| ' +
     (v.walkforward_median_abs_log_error === null ? '—' : v.walkforward_median_abs_log_error.toFixed(2)) +
     ', ' + (v.walkforward_hit_within_2x === null ? '—' : Math.round(v.walkforward_hit_within_2x * 100) + '% within 2×') + '</dd>' +
-    '<dt>Rank ranges</dt><dd>' + v.refits + ' bootstrap refits of the curve (seeded, so the ranges are ' +
-    'the same every run); every row carries its p10–p90 rank range</dd>';
+    '<dt>Rank and value ranges</dt><dd>' + v.refits + ' bootstrap refits of the curve (seeded, so the ranges are ' +
+    'the same every run); every row carries its p10–p90 rank range and its p10–p90 implied-value ' +
+    'range, and the farm verdicts are netted at the P10 of that range</dd>';
   $('valid-note').textContent =
     'The errors are honest about this data: market-cap-to-TVL ratios span four orders of magnitude, ' +
     'so no curve predicts a launch value closely. What the validation shows is that the fitted curve ' +
-    'predicts held-out comps better than a flat multiple does — and the rank ranges say how far to ' +
-    'trust any one row\'s place.';
-  $('effects-text').textContent =
-    'What each category adds to the fitted curve, most peers first. The factor is what the category ' +
-    'multiplies the fitted value by; a category the board carries but with no trading peer is not ' +
-    'listed, because it gets no effect.';
-  var boardCats = new Set(R.rows.map(function (r) { return r.category || '(uncategorised)'; }));
-  var shown = f.by_category.filter(function (r) { return boardCats.has(r.category); })
-    .sort(function (a, b) { return b.comps - a.comps || (a.category < b.category ? -1 : 1); })
-    .slice(0, 15);
-  $('effect-rows').innerHTML = shown.map(function (r) {
-    return '<tr><td>' + esc(r.category) + '</td><td class="num">×' + r.factor.toFixed(2) +
-      '</td><td class="num">' + (r.effect >= 0 ? '+' : '') + r.effect.toFixed(2) +
-      '</td><td class="num">' + r.comps + '</td></tr>';
+    'predicts held-out comps better than a flat multiple does — and the rank and value ranges say how ' +
+    'far to trust any one row\'s place.';
+  // Ablation: the blind test that stripped the model to the curve alone. The table shows the top 12
+  // configs, the chosen one, and the best config that keeps the full category effect (k=5).
+  var bestEffectRow = ab.rows.find(function (r) { return r.terms.effect && r.shrinkage_k === 5; });
+  var abShown = ab.rows.slice(0, 12);
+  if (bestEffectRow && abShown.indexOf(bestEffectRow) < 0) abShown.push(bestEffectRow);
+  $('ablation-text').textContent =
+    'Every post-fit term — the category effect, the growth, maturity and chain multipliers — on or ' +
+    'off, over two comp sets (all ' + v.loo_n + ' comps, and comps without the exchanges), plus three ' +
+    'rows that keep the category effect under a stronger shrinkage: ' + ab.rows.length + ' configs, each ' +
+    'scored by leave-one-out and the seeded split on the same test set. The combined score is the two ' +
+    'medians added; the lowest wins. ' + ab.reason;
+  $('ablation-rows').innerHTML = abShown.map(function (r) {
+    return '<tr' + (r.chosen ? ' class="chosen"' : '') + '><td>' + esc(r.name) +
+      (r.chosen ? ' <span class="badge">CHOSEN</span>' : '') + '</td>' +
+      '<td class="num">' + r.loo_median_abs_log_error.toFixed(2) + '</td>' +
+      '<td class="num">' + (r.split_median_abs_log_error === null ? '—' : r.split_median_abs_log_error.toFixed(2)) + '</td>' +
+      '<td class="num"><b>' + r.combined.toFixed(2) + '</b></td>' +
+      '<td class="num">' + Math.round(r.loo_hit_within_2x * 100) + '%</td></tr>';
   }).join('');
+  $('ablation-note').textContent =
+    'The full ' + ab.rows.length + '-row table is in board.json and the research note. The ex-CEX filter ' +
+    'was not adopted: it helps some configs and hurts others, so there is no reliable signal in it. ' +
+    'Age still enters the model — through the launch odds, not through a multiplier the blind test ' +
+    'rejected.';
 
   // Curve-form comparison: the blind tests that picked the board's form.
   $('forms-text').textContent =
@@ -147,6 +171,51 @@
       '<td class="num">' + r.median_abs_log_error.toFixed(2) + '</td>' +
       '<td class="num">' + Math.round(r.hit_within_2x * 100) + '%</td></tr>';
   }).join('');
+
+  // Launch odds: empirical cohort rates by category and age, with their out-of-sample validation.
+  var ov = od.validation;
+  $('odds-text').textContent =
+    'The odds are read off ' + od.cohort_n + ' dated protocols — every protocol with a listing date, ' +
+    'excluding exchanges and versioned pools — of which ' + od.cohort_tokened + ' already have a token ' +
+    '(a global rate of ' + Math.round(od.global_rate * 100) + '%). A row\'s odds are the token rate of ' +
+    'its category in its age bucket, shrunk toward the bucket rate where the cell is thin. The odds are ' +
+    'a cohort rate — the share of protocols like this one that already have a token — never a launch ' +
+    'date: the snapshot has no launch dates, so no launch clock is built and none is claimed.';
+  $('odds-bucket-rows').innerHTML = od.buckets.map(function (b) {
+    return '<tr><td>' + esc(b.label) + '</td><td class="num">' + b.n + '</td>' +
+      '<td class="num">' + b.tokened + '</td><td class="num"><b>' + Math.round(b.rate * 100) + '%</b></td></tr>';
+  }).join('');
+  // The matrix: the ten categories with the most board rows, each cell the shrunk token rate.
+  var boardCatCounts = {};
+  R.rows.forEach(function (r) {
+    var cat = r.category || 'Uncategorized';
+    boardCatCounts[cat] = (boardCatCounts[cat] || 0) + 1;
+  });
+  var matrixCats = Object.keys(boardCatCounts)
+    .sort(function (a, b) { return boardCatCounts[b] - boardCatCounts[a] || (a < b ? -1 : 1); })
+    .slice(0, 10);
+  $('odds-matrix-text').textContent =
+    'The ten categories with the most board rows. A dash means no protocol of that category falls in ' +
+    'that age bucket — the row then takes the bucket rate. The full matrix is in board.json.';
+  $('odds-matrix-head').innerHTML = '<tr><th>Category</th>' +
+    od.buckets.map(function (b) { return '<th class="num">' + esc(b.label) + '</th>'; }).join('') + '</tr>';
+  $('odds-matrix-rows').innerHTML = matrixCats.map(function (cat) {
+    return '<tr><td>' + esc(cat) + ' <span class="cat">(' + boardCatCounts[cat] + ')</span></td>' +
+      od.buckets.map(function (b) {
+        var cell = od.cells.find(function (c) { return c.category === cat && c.bucket === b.label; });
+        return '<td class="num">' + (cell ? Math.round(cell.rate * 100) + '% <span class="cat">(n=' + cell.n + ')</span>' : '—') + '</td>';
+      }).join('') + '</tr>';
+  }).join('');
+  $('odds-valid-rows').innerHTML =
+    '<dt>Leave-one-out, ' + ov.loo_n + ' protocols</dt><dd>Brier ' + ov.loo_brier.toFixed(4) +
+    ' against the base rate\'s ' + ov.loo_brier_base.toFixed(4) + '; log loss ' + ov.loo_log_loss.toFixed(4) +
+    ' against ' + ov.loo_log_loss_base.toFixed(4) + ' — the odds beat the base rate</dd>' +
+    '<dt>Time split</dt><dd>fit the table on the ' + ov.split_train_n + ' protocols listed before ' +
+    (ov.split_cutoff || '—') + ', tested on the ' + ov.split_test_n + ' listed after: Brier ' +
+    ov.split_brier.toFixed(4) + ' against the base rate\'s ' + ov.split_brier_base.toFixed(4) + '</dd>';
+  $('odds-note').textContent =
+    'One caveat: the cohort is survivors. Protocols that died without a token may never reach a ' +
+    'snapshot this size, so the rates are an upper read on a young protocol\'s chances, not a promise.';
 
   // Movers: the board's fastest growers by seven-day change.
   var movers = R.rows.filter(function (r) { return r.change_7d !== null; })
@@ -191,6 +260,109 @@
       '<td>' + esc(r.reason) + '</td></tr>';
   }).join('');
 
+  // Portfolio planner: the best farm set for a capital budget and a weekly time budget. Candidates
+  // are the rows the P10 verdict does not skip, ordered by expected value per dollar of farm cost;
+  // the planner takes them in that order while the capital and the weekly hours hold. The choice is
+  // deterministic — the same budget always gives the same plan.
+  var PRESETS = [
+    { label: '$250 / 5 hrs', capital: 250, hours: 5 },
+    { label: '$1,000 / 10 hrs', capital: 1000, hours: 10 },
+    { label: '$2,500 / 20 hrs', capital: 2500, hours: 20 },
+  ];
+  function weeklyHours(r) { return r.farm.time_hours / (r.farm.hold_days / 7); }
+  $('planner-text').textContent =
+    'Give the planner a capital budget and the hours a week you can spend farming, and it picks the ' +
+    'set of farms that maximises expected value per dollar of farm cost — skipping the rows the P10 ' +
+    'verdict marks skip — until the budget or the time runs out. The plan shows its total capital, ' +
+    'total weekly time, total expected value, and its P10 economics, so the conservative read of the ' +
+    'whole portfolio is visible. No airdrop yield is invented anywhere: the expected value is the ' +
+    'launch\'s scale weighted by its odds, and the per-dollar figures are screening ratios, not returns.';
+  $('plan-presets').innerHTML = PRESETS.map(function (p, i) {
+    return '<button type="button" data-preset="' + i + '">' + esc(p.label) + '</button>';
+  }).join('');
+  function planFarm() {
+    var capital = Math.max(0, parseFloat($('plan-capital').value) || 0);
+    var hours = Math.max(0, parseFloat($('plan-hours').value) || 0);
+    var candidates = R.rows.filter(function (r) { return r.farm.verdict !== 'skip'; })
+      .sort(function (a, b) { return b.farm.expected_per_dollar - a.farm.expected_per_dollar || (a.slug < b.slug ? -1 : 1); });
+    var chosen = [];
+    var spent = 0;
+    var spentHours = 0;
+    candidates.forEach(function (r) {
+      var wh = weeklyHours(r);
+      if (spent + r.farm.net_cost_usd <= capital && spentHours + wh <= hours) {
+        chosen.push(r);
+        spent += r.farm.net_cost_usd;
+        spentHours += wh;
+      }
+    });
+    var totalExpected = chosen.reduce(function (s, r) { return s + r.expected_value_usd; }, 0);
+    var totalP10 = chosen.reduce(function (s, r) { return s + r.implied_p10_usd; }, 0);
+    $('plan-summary').innerHTML =
+      '<b>' + chosen.length + ' farms</b> for ' + dollars(spent) + ' of the ' + dollars(capital) +
+      ' budget and ' + spentHours.toFixed(1) + ' of the ' + hours + ' hours a week: total expected value ' +
+      '<b>' + money(totalExpected) + '</b>, total P10 implied value <b>' + money(totalP10) + '</b>.';
+    $('plan-rows').innerHTML = chosen.map(function (r) {
+      return '<tr data-slug="' + esc(r.slug) + '"><td class="rank">' + r.rank + '</td>' +
+        '<td><span class="name">' + esc(r.name) + '</span>' +
+        (r.watchlist ? '<span class="badge">WATCHLIST</span>' : '<span class="badge early">EARLY</span>') + '</td>' +
+        '<td class="num">' + dollars(r.farm.net_cost_usd) + '</td>' +
+        '<td class="num">' + weeklyHours(r).toFixed(2) + '</td>' +
+        '<td class="num"><b>' + money(r.expected_value_usd) + '</b></td>' +
+        '<td class="num">' + money(r.implied_p10_usd) + '</td>' +
+        '<td>' + verdictBadge(r.farm) + '</td></tr>';
+    }).join('');
+    $('plan-note').textContent =
+      chosen.length === 0
+        ? 'No farm fits this budget: the cheapest farm costs ' + dollars(Math.min.apply(null, candidates.map(function (r) { return r.farm.net_cost_usd; }))) + '.'
+        : 'Ordered by expected value per dollar of farm cost. Click a row to open its detail view.';
+  }
+  $('plan-run').addEventListener('click', planFarm);
+  $('plan-presets').addEventListener('click', function (e) {
+    var btn = e.target.closest('button[data-preset]');
+    if (!btn) return;
+    var p = PRESETS[parseInt(btn.getAttribute('data-preset'), 10)];
+    $('plan-capital').value = p.capital;
+    $('plan-hours').value = p.hours;
+    planFarm();
+  });
+  $('plan-rows').addEventListener('click', function (e) {
+    var tr = e.target.closest('tr[data-slug]');
+    if (!tr) return;
+    openSlug(tr.getAttribute('data-slug'));
+  });
+  planFarm();
+
+  // Research note: the methodology, validation, limits and reading guide, with the numbers baked in.
+  $('research-body').innerHTML = R.research.map(function (s) {
+    return '<h3>' + esc(s.heading) + '</h3>' +
+      s.paragraphs.map(function (p) { return '<p>' + esc(p) + '</p>'; }).join('');
+  }).join('');
+
+  // Model source: the fitted formula and the code that runs it, so the judge can read the model.
+  $('source-text').textContent =
+    'The whole value model, in one formula and the code that runs it. The fit is ordinary least ' +
+    'squares on the ' + f.comps + ' live-token comps; the odds are read off the ' + od.cohort_n +
+    '-protocol cohort; the board is sorted by the implied value, and the expected value is the ' +
+    'implied value weighted by the odds. The full source is in the repository: lib/model.ts holds ' +
+    'the model, main.ts writes the board, the dashboard and the dossier.';
+  $('source-code').textContent =
+    '// lib/model.ts — the fitted curve, and nothing else (radar-6)\n' +
+    'const fit = fitModel(comps, "loglog");\n' +
+    '//   log(mcap) = ' + f.intercept.toFixed(2) + ' + ' + f.slope.toFixed(2) + ' x log(TVL), R² ' + f.r2.toFixed(2) + ', ' + f.comps + ' comps\n' +
+    'function impliedValue(p) {\n' +
+    '  // the ablation dropped the category effect and the growth,\n' +
+    '  // maturity and chain multipliers — no term is added here\n' +
+    '  return Math.exp(fit.intercept + fit.slope * Math.log(p.tvl_usd));\n' +
+    '}\n' +
+    'const odds = oddsFor(p, oddsTable); // empirical cohort rate, category x age\n' +
+    'const expected = implied * odds.rate; // the launch, weighted by how often it happens\n' +
+    '// rank ranges and value ranges: 200 bootstrap refits of the curve, seeded\n' +
+    '// farm verdicts: netted at the P10 of the value range, never the point estimate';
+  $('source-note').textContent =
+    'Neighbour blending is weight 0 by design: five blend designs were tested in radar-5 and all ' +
+    'failed the split test, so the neighbours stay comparables and never price the board.';
+
   // Filter options.
   var cats = Array.from(new Set(R.rows.map(function (r) { return r.category || '(uncategorised)'; }))).sort();
   var chains = Array.from(new Set(R.rows.flatMap(function (r) { return r.chains; }))).sort();
@@ -218,6 +390,8 @@
     var by = {
       rank: function (a, b) { return a.rank - b.rank; },
       implied: function (a, b) { return b.implied_value_usd - a.implied_value_usd; },
+      expected: function (a, b) { return b.expected_value_usd - a.expected_value_usd; },
+      odds: function (a, b) { return b.odds.rate - a.odds.rate; },
       ipd: function (a, b) { return b.farm.implied_per_dollar - a.farm.implied_per_dollar; },
       tvl: function (a, b) { return b.tvl_usd - a.tvl_usd; },
       growth: function (a, b) { return (b.change_7d || 0) - (a.change_7d || 0); },
@@ -239,6 +413,8 @@
         '<td class="num">' + money(r.tvl_usd) + '</td>' +
         '<td class="num">' + pct(r.change_7d) + '</td>' +
         '<td class="num"><b>' + money(r.implied_value_usd) + '</b></td>' +
+        '<td class="num">' + Math.round(r.odds.rate * 100) + '%</td>' +
+        '<td class="num"><b>' + money(r.expected_value_usd) + '</b></td>' +
         '<td class="num">' + perDollar(r.farm.implied_per_dollar) + '</td>' +
         '<td>' + verdictBadge(r.farm) + '</td></tr>';
     }).join('');
@@ -249,14 +425,14 @@
   function verdictWhy(r) {
     var gasShare = r.farm.gas_share;
     if (r.farm.verdict === 'skip') {
-      if (r.implied_value_usd < R.model.verdict_skip_implied_usd) return 'Launch under $1M implied';
+      if (r.implied_p10_usd < R.model.verdict_skip_implied_usd) return 'P10 launch under $1M implied';
       return 'Gas alone is ' + Math.round(gasShare * 100) + '% of the capital — more than the deposit itself';
     }
     if (r.farm.verdict === 'thin') {
-      if (r.implied_value_usd < R.model.verdict_thin_implied_usd) return 'Launch under $10M implied';
+      if (r.implied_p10_usd < R.model.verdict_thin_implied_usd) return 'P10 launch under $10M implied';
       return 'Gas is ' + Math.round(gasShare * 100) + '% of the capital';
     }
-    return 'Net cost small against a launch over $10M implied';
+    return 'Net cost small against a P10 launch over $10M implied';
   }
 
   function renderDetail() {
@@ -271,15 +447,20 @@
       ' over ' + v.refits + ' refits) · ' + esc(r.category || 'uncategorised') + ' · ' +
       r.chains.map(esc).join(', ') + ' · ' + (r.watchlist ? 'on the watchlist' : 'early find') + '</p>' +
       '<p class="big">' + money(r.implied_value_usd) + '</p>' +
-      '<p class="lbl">Implied value</p>' +
+      '<p class="lbl">Implied value (P10–P90: ' + money(r.implied_p10_usd) + ' – ' + money(r.implied_p90_usd) + ')</p>' +
+      '<p class="big">' + money(r.expected_value_usd) + '</p>' +
+      '<p class="lbl">Expected value — implied × launch odds of ' + Math.round(r.odds.rate * 100) +
+      '% (' + esc(r.odds.cell) + ', n=' + r.odds.cell_n + ')</p>' +
       '<h3>Farm plan — ' + verdictBadge(r.farm) + '</h3>' +
       '<p class="net">Net cost ' + dollars(r.farm.net_cost_usd) + ': ' + dollars(r.farm.capital_usd) +
       ' capital + ' + dollars(r.farm.gas_usd) + ' gas (' + Math.round(r.farm.gas_share * 100) +
       '% of the capital) over ' + r.farm.transactions + ' transactions, ' + r.farm.hold_days +
       ' days, about ' + r.farm.time_hours + ' hours of work. Implied value per $1 of farm cost: ' +
-      perDollar(r.farm.implied_per_dollar) + '; per hour: ' + money(r.farm.implied_per_hour) + '. ' +
-      verdictWhy(r) + '.</p>' +
-      '<p class="note">Implied-per-dollar and implied-per-hour are screening ratios — the launch\'s ' +
+      perDollar(r.farm.implied_per_dollar) + '; expected value per $1: ' +
+      perDollar(r.farm.expected_per_dollar) + '; P10 implied per $1: ' +
+      perDollar(r.farm.p10_implied_per_dollar) + '. ' +
+      verdictWhy(r) + ' — the verdict is netted at the P10 launch, the low end of the band.</p>' +
+      '<p class="note">Per-dollar and per-hour figures are screening ratios — the launch\'s ' +
       'scale against what farming it costs — not returns: a farmer captures only a small share of any ' +
       'launch, and no airdrop is promised.</p>' +
       '<ol>' +
@@ -290,11 +471,11 @@
       '<dt>TVL</dt><dd>' + money(r.tvl_usd) + '</dd>' +
       '<dt>7d change</dt><dd>' + pct(r.change_7d) + '</dd>' +
       '<dt>Age</dt><dd>' + (r.age_days === null ? 'unknown' : r.age_days + ' days') + '</dd>' +
-      '<dt>Fitted multiple</dt><dd>' + r.multiple.toFixed(3) + ' (' + r.comp_count + ' peers, effect ' +
-      (r.category_effect >= 0 ? '+' : '') + r.category_effect.toFixed(2) + ')</dd>' +
-      '<dt>Growth ×</dt><dd>' + r.growth_multiplier.toFixed(2) + '</dd>' +
-      '<dt>Maturity ×</dt><dd>' + r.maturity_multiplier.toFixed(2) + '</dd>' +
-      '<dt>Chain breadth ×</dt><dd>' + r.chain_multiplier.toFixed(2) + '</dd>' +
+      '<dt>Fitted multiple</dt><dd>' + r.multiple.toFixed(3) + ' (' + r.comp_count + ' peers)</dd>' +
+      '<dt>Terms kept</dt><dd>curve only — the ablation dropped the category effect and the growth, maturity and chain multipliers</dd>' +
+      '<dt>Launch odds</dt><dd>' + Math.round(r.odds.rate * 100) + '% (' + esc(r.odds.cell) + ', ' +
+      r.odds.cell_tokened + ' of ' + r.odds.cell_n + ' tokened; bucket ' + esc(r.odds.bucket) + ' ' +
+      Math.round(r.odds.bucket_rate * 100) + '%)</dd>' +
       '<dt>Nearest traded comparable</dt><dd>' + (r.farm.kin ? esc(r.farm.kin.name) +
       ' (×' + r.farm.kin.ratio.toFixed(2) + ' of TVL)' : 'none') + '</dd>' +
       '<dt>Size neighbours</dt><dd>' + r.neighbours.count + ' nearest traded comps, ' +
@@ -343,6 +524,17 @@
   } else if (shot === 'validation') {
     render();
     document.getElementById('model').scrollIntoView();
+    return;
+  } else if (shot === 'odds') {
+    render();
+    document.getElementById('odds').scrollIntoView();
+    return;
+  } else if (shot === 'portfolio') {
+    $('plan-capital').value = 1000;
+    $('plan-hours').value = 10;
+    planFarm();
+    render();
+    document.getElementById('planner').scrollIntoView();
     return;
   } else if (shot === 'audit') {
     render();

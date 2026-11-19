@@ -34,6 +34,8 @@
   <select id="sort" aria-label="Sort the board">
     <option value="rank">Sort: rank</option>
     <option value="implied">Sort: implied value</option>
+    <option value="expected">Sort: expected value</option>
+    <option value="odds">Sort: launch odds</option>
     <option value="ipd">Sort: implied per $1</option>
     <option value="tvl">Sort: TVL</option>
     <option value="growth">Sort: 7d growth</option>
@@ -47,7 +49,7 @@
     <table id="board">
       <thead><tr>
         <th>#</th><th>Protocol</th><th>Category</th><th>Chains</th>
-        <th class="num">TVL</th><th class="num">7d</th><th class="num">Implied value</th><th class="num">Implied/$1</th><th>Farm</th>
+        <th class="num">TVL</th><th class="num">7d</th><th class="num">Implied value</th><th class="num">Odds</th><th class="num">Expected value</th><th class="num">Implied/$1</th><th>Farm</th>
       </tr></thead>
       <tbody id="rows"></tbody>
     </table>
@@ -87,12 +89,61 @@
     <thead><tr><th>Category</th><th class="num">Comps</th><th class="num">Median |log error|</th><th class="num">Within 2×</th></tr></thead>
     <tbody id="catloo-rows"></tbody>
   </table>
-  <h3>Category effects</h3>
-  <p id="effects-text"></p>
-  <table id="effects">
-    <thead><tr><th>Category</th><th class="num">Factor</th><th class="num">Effect (log)</th><th class="num">Trading peers</th></tr></thead>
-    <tbody id="effect-rows"></tbody>
+  <h3>Ablation — which terms the blind test kept</h3>
+  <p id="ablation-text"></p>
+  <table id="ablation">
+    <thead><tr><th>Config</th><th class="num">Leave-one-out</th><th class="num">Split test</th><th class="num">Combined</th><th class="num">Within 2× (LOO)</th></tr></thead>
+    <tbody id="ablation-rows"></tbody>
   </table>
+  <p id="ablation-note"></p>
+</section>
+
+<section class="odds" id="odds">
+  <h2>Launch odds — how often protocols like this one already have a token</h2>
+  <p id="odds-text"></p>
+  <h3>Token rate by age</h3>
+  <table id="odds-buckets">
+    <thead><tr><th>Age</th><th class="num">Protocols</th><th class="num">Tokened</th><th class="num">Rate</th></tr></thead>
+    <tbody id="odds-bucket-rows"></tbody>
+  </table>
+  <h3>Token rate by category and age</h3>
+  <p id="odds-matrix-text"></p>
+  <table id="odds-matrix">
+    <thead id="odds-matrix-head"></thead>
+    <tbody id="odds-matrix-rows"></tbody>
+  </table>
+  <h3>Validation — the odds, tested out of sample</h3>
+  <dl class="valid" id="odds-valid-rows"></dl>
+  <p id="odds-note"></p>
+</section>
+
+<section class="planner" id="planner">
+  <h2>Farm portfolio planner — the best farm set for a budget</h2>
+  <p id="planner-text"></p>
+  <div class="plan-controls">
+    <label>Capital budget <input id="plan-capital" type="number" min="50" step="50" value="1000"></label>
+    <label>Hours per week <input id="plan-hours" type="number" min="1" step="1" value="10"></label>
+    <button id="plan-run" type="button">Plan my farm</button>
+    <span class="presets" id="plan-presets"></span>
+  </div>
+  <p id="plan-summary"></p>
+  <table id="plan-table">
+    <thead><tr><th>#</th><th>Protocol</th><th class="num">Net cost</th><th class="num">Hrs/week</th><th class="num">Expected value</th><th class="num">P10 implied</th><th>Farm</th></tr></thead>
+    <tbody id="plan-rows"></tbody>
+  </table>
+  <p id="plan-note"></p>
+</section>
+
+<section class="research" id="research">
+  <h2>Research note</h2>
+  <div id="research-body"></div>
+</section>
+
+<section class="source" id="source">
+  <h2>Model source — the formula, and the code that runs it</h2>
+  <p id="source-text"></p>
+  <pre id="source-code"></pre>
+  <p id="source-note"></p>
 </section>
 
 <section class="live" id="live">
